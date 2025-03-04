@@ -11,7 +11,6 @@ def run_experiment(
     vehicle_densities,
     penetration_rates,
     algorithms,
-    rsu_configs,
     num_runs=10,
     simulation_time=15,
     visualize=False,
@@ -27,8 +26,6 @@ def run_experiment(
         List of penetration rates to test (percentage as decimal)
     algorithms : list
         List of forwarding algorithms to test
-    rsu_configs : list
-        List of boolean values indicating whether to use RSUs
     num_runs : int
         Number of simulation runs for each configuration
     simulation_time : float
@@ -48,7 +45,6 @@ def run_experiment(
         len(vehicle_densities)
         * len(penetration_rates)
         * len(algorithms)
-        * len(rsu_configs)
         * num_runs
     )
 
@@ -56,7 +52,6 @@ def run_experiment(
         for density in vehicle_densities:
             for rate in penetration_rates:
                 for algorithm in algorithms:
-                    for use_rsus in rsu_configs:
                         algorithm_name = algorithm.name
 
                         for run in range(num_runs):
@@ -64,7 +59,6 @@ def run_experiment(
                                 "vehicle_density": density,
                                 "penetration_rate": rate,
                                 "algorithm": algorithm,
-                                "use_rsus": use_rsus,
                             }
 
                             # Create and run simulation
@@ -84,7 +78,6 @@ def run_experiment(
                                 "Vehicle_Density": density,
                                 "Penetration_Rate": rate,
                                 "Algorithm": algorithm_name,
-                                "Use_RSUs": use_rsus,
                                 "Run": run,
                                 "EAR_Mean": run_results["EAR"]["mean"],
                                 "EAR_Median": run_results["EAR"]["median"],
@@ -272,7 +265,6 @@ if __name__ == "__main__":
             ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
             ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
         ]
-        rsu_configs = [False]  # No RSUs
         num_runs = 2  # Just 2 runs for quick testing
         simulation_time = 10  # Shorter simulation time
     else:
@@ -285,7 +277,6 @@ if __name__ == "__main__":
             ForwardingAlgorithm.GBC,  # GBC forwarding
             ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
         ]
-        rsu_configs = [False]  # No RSUs for baseline comparison with paper
         num_runs = 10  # 10 runs per configuration as in the paper
         simulation_time = 15  # 15 seconds per run as in the paper
 
@@ -294,7 +285,6 @@ if __name__ == "__main__":
         vehicle_densities=vehicle_densities,
         penetration_rates=penetration_rates,
         algorithms=algorithms,
-        rsu_configs=rsu_configs,
         num_runs=num_runs,
         simulation_time=simulation_time,
         visualize=args.visualize,

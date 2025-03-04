@@ -576,130 +576,12 @@ class Vehicle:
         return None
 
 
-class RoadSideUnit:
-    """Road Side Unit (RSU) for forwarding messages at intersections"""
-
-    def __init__(
-        self, rsu_id, position, environment, algorithm=ForwardingAlgorithm.MULTI_HOP
-    ):
-        self.id = f"RSU_{rsu_id}"
-        self.position = position
-        self.environment = environment
-        self.algorithm = algorithm
-
-        # Communication
-        self.comm_range = 300  # meters
-        self.local_environment_model = {}  # For multi-hop algorithm
-        self.cpm_buffer = []  # For multi-hop algorithm
-        self.max_hop_count = 2  # Maximum hops for forwarding
-        self.last_update_time = {}  # Last time an object was included in a CPM
-
-    def receive_cpm(self, cpm, current_time):
-        """Process received CPM and update local environment model"""
-        # Store CPM in buffer
-        self.cpm_buffer.append(cpm)
-
-        # Process buffer
-        self._process_cpm_buffer(current_time)
-
-    def _process_cpm_buffer(self, current_time):
-        """Process CPMs in buffer and update local environment model"""
-        for cpm in self.cpm_buffer:
-            for obj_data in cpm["objects"]:
-                obj_id = obj_data["object_id"]
-
-                # Update local environment model if object is newer or not present
-                if (
-                    obj_id not in self.local_environment_model
-                    or obj_data["timestamp"]
-                    > self.local_environment_model[obj_id]["timestamp"]
-                ):
-
-                    # Don't update if max hop count reached
-                    if obj_data["hop_count"] < self.max_hop_count:
-                        self.local_environment_model[obj_id] = obj_data
-
-        # Clear buffer
-        self.cpm_buffer = []
-
-    def create_cpm(self, current_time):
-        """Create Collective Perception Message based on local environment model"""
-        cpm = {
-            "sender_id": self.id,
-            "timestamp": current_time,
-            "position": self.position,
-            "objects": [],
-        }
-
-        # Different handling based on algorithm
-        if self.algorithm == ForwardingAlgorithm.GBC:
-            # GBC - just forward all objects
-            for obj_id, obj_data in self.local_environment_model.items():
-                if obj_data["hop_count"] < self.max_hop_count:
-                    # Increment hop count
-                    obj_data_copy = obj_data.copy()
-                    obj_data_copy["hop_count"] += 1
-                    cpm["objects"].append(obj_data_copy)
-
-        elif self.algorithm == ForwardingAlgorithm.MULTI_HOP:
-            # Application Layer Multi-Hop - selective forwarding based on kinematic rules
-            for obj_id, obj_data in self.local_environment_model.items():
-                # Check if hop count is within limit
-                if obj_data["hop_count"] >= self.max_hop_count:
-                    continue
-
-                # Check if we should include this object based on kinematic update rules
-                should_include = False
-
-                # If it's the first time we've seen this object
-                if obj_id not in self.last_update_time:
-                    should_include = True
-                else:
-                    last_time = self.last_update_time[obj_id]["time"]
-                    last_pos = self.last_update_time[obj_id]["position"]
-                    last_speed = self.last_update_time[obj_id]["speed"]
-                    last_heading = self.last_update_time[obj_id]["heading"]
-
-                    # Check ETSI kinematic update rules
-                    time_diff = current_time - last_time
-                    pos_diff = self.environment.get_distance(
-                        last_pos, obj_data["position"]
-                    )
-                    speed_diff = abs(last_speed - obj_data["speed"])
-                    heading_diff = abs(last_heading - obj_data["heading"])
-
-                    if (
-                        time_diff > 1.0  # More than 1 second
-                        or pos_diff > 4.0  # Position change > 4m
-                        or speed_diff > 4.0  # Speed change > 4 m/s
-                        or heading_diff > 4.0
-                    ):  # Heading change > 4°
-                        should_include = True
-
-                if should_include:
-                    # Update last inclusion time
-                    self.last_update_time[obj_id] = {
-                        "time": current_time,
-                        "position": obj_data["position"],
-                        "speed": obj_data["speed"],
-                        "heading": obj_data["heading"],
-                    }
-
-                    # Include with incremented hop count
-                    obj_data_copy = obj_data.copy()
-                    obj_data_copy["hop_count"] += 1
-                    cpm["objects"].append(obj_data_copy)
-
-        return cpm if cpm["objects"] else None
-
-
 class WirelessNetwork:
     """Simplified wireless network simulation with basic range and obstacle checks"""
 
-    def __init__(self, environment, vehicles, rsus=None):
+    def __init__(self, environment, vehicles):
         self.environment = environment
         self.vehicles = vehicles
-        self.rsus = rsus if rsus else []
         self.channel_busy_time = 0
         self.total_time = 0
         self.communication_range = 300  # meters
@@ -737,20 +619,6 @@ class WirelessNetwork:
             ):
                 # Vehicle receives the message
                 vehicle.receive_cpm(message, reception_time)
-
-        # RSUs also receive messages with the same simple check
-        for rsu in self.rsus:
-            if hasattr(sender, "id") and rsu.id == sender.id:
-                continue  # Skip sender
-
-            distance = self.environment.get_distance(sender.position, rsu.position)
-
-            # Simple check: within range and has line of sight
-            if (
-                distance <= self.communication_range
-                and self.environment.is_in_line_of_sight(sender.position, rsu.position)
-            ):
-                rsu.receive_cpm(message, reception_time)
 
     def get_channel_busy_ratio(self):
         """Calculate Channel Busy Ratio and reset every window_size seconds"""
@@ -991,19 +859,14 @@ class Simulation:
         # Update to pass road_width
         self.environment = ManhattanGrid(grid_size=3, block_length=250, road_width=16)
         self.vehicles = []
-        self.rsus = []
         self.current_time = 0
         self.metrics = MetricsCollector()
 
         # Create vehicles
         self._create_vehicles()
 
-        # Create RSUs at intersections if enabled
-        if config.get("use_rsus", False):
-            self._create_rsus()
-
         # Create network
-        self.network = WirelessNetwork(self.environment, self.vehicles, self.rsus)
+        self.network = WirelessNetwork(self.environment, self.vehicles)
 
     def _create_vehicles(self):
         """Create vehicles based on density and penetration rate"""
@@ -1025,27 +888,6 @@ class Simulation:
 
             vehicle = Vehicle(i, self.environment, has_cps, algorithm)
             self.vehicles.append(vehicle)
-
-    def _create_rsus(self):
-        """Create Road Side Units at intersections"""
-        # Place RSUs at the corners of each intersection for better coverage
-        for idx, intersection in enumerate(self.environment.intersections):
-            x, y = intersection
-
-            # Place 4 RSUs at the corners of each intersection
-            corners = [
-                (x - 20, y - 20),  # Bottom-left corner
-                (x - 20, y + 20),  # Top-left corner
-                (x + 20, y - 20),  # Bottom-right corner
-                (x + 20, y + 20),  # Top-right corner
-            ]
-
-            for corner_idx, corner_pos in enumerate(corners):
-                rsu_id = f"{idx}_{corner_idx}"
-                rsu = RoadSideUnit(
-                    rsu_id, corner_pos, self.environment, self.config["algorithm"]
-                )
-                self.rsus.append(rsu)
 
     # Update the visualization part of the run method
     def run(self, simulation_time, dt=0.01, visualize=False):
@@ -1171,15 +1013,6 @@ class Simulation:
                     markersize=10,
                     label="CPS Vehicle",
                 ),
-                Line2D(
-                    [0],
-                    [0],
-                    marker="^",
-                    color="w",
-                    markerfacecolor="red",
-                    markersize=10,
-                    label="RSU",
-                ),
                 plt.Rectangle(
                     (0, 0),
                     1,
@@ -1202,7 +1035,6 @@ class Simulation:
             # Initialize scatter plots
             regular_vehicles_scatter = ax.scatter([], [], c="blue", s=30)
             cps_vehicles_scatter = ax.scatter([], [], c="green", s=50)
-            rsu_scatter = ax.scatter([], [], c="red", marker="^", s=80)
 
             # For communication visualization
             comm_lines = []
@@ -1278,29 +1110,6 @@ class Simulation:
                             vehicle, cpm, self.current_time, dt
                         )
 
-            # Create and transmit CPMs from RSUs
-            for rsu in self.rsus:
-                cpm = rsu.create_cpm(self.current_time)
-
-                if cpm:
-                    # Record CPM size
-                    self.metrics.record_cpm_size(cpm)
-
-                    # Store communication for visualization
-                    if visualize:
-                        for receiving_vehicle in self.vehicles:
-                            if receiving_vehicle.has_cps:
-                                dist = self.environment.get_distance(
-                                    rsu.position, receiving_vehicle.position
-                                )
-                                if dist <= rsu.comm_range:
-                                    recent_communications.append(
-                                        (rsu.position, receiving_vehicle.position)
-                                    )
-
-                    # Simulate transmission
-                    self.network.simulate_transmission(rsu, cpm, self.current_time, dt)
-
             # Collect metrics every 1 second
             if step % int(1 / dt) == 0:
                 ear_result = self.metrics.calculate_ear(
@@ -1355,7 +1164,6 @@ class Simulation:
                         for v in self.vehicles
                         if v.has_cps
                     ]
-                    rsu_positions = [(r.position[0], r.position[1]) for r in self.rsus]
 
                     if regular_vehicles:
                         x, y = zip(*regular_vehicles)
@@ -1368,12 +1176,6 @@ class Simulation:
                         cps_vehicles_scatter.set_offsets(np.column_stack([x, y]))
                     else:
                         cps_vehicles_scatter.set_offsets(np.column_stack([[], []]))
-
-                    if rsu_positions:
-                        x, y = zip(*rsu_positions)
-                        rsu_scatter.set_offsets(np.column_stack([x, y]))
-                    else:
-                        rsu_scatter.set_offsets(np.column_stack([[], []]))
 
                     # Visualize recent communications (limit to last 20 to avoid clutter)
                     for i, (sender_pos, receiver_pos) in enumerate(
