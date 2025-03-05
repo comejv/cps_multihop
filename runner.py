@@ -31,7 +31,7 @@ def run_experiment(
     simulation_time : float
         Duration of each simulation run in seconds
     visualize : bool
-        Whether to visualize the simulation (only works for the first configuration)
+        Whether to visualize the simulation
 
     Returns:
     --------
@@ -42,55 +42,52 @@ def run_experiment(
 
     # Total configurations
     total_configs = (
-        len(vehicle_densities)
-        * len(penetration_rates)
-        * len(algorithms)
-        * num_runs
+        len(vehicle_densities) * len(penetration_rates) * len(algorithms) * num_runs
     )
 
     with tqdm(total=total_configs) as pbar:
         for density in vehicle_densities:
             for rate in penetration_rates:
                 for algorithm in algorithms:
-                        algorithm_name = algorithm.name
+                    algorithm_name = algorithm.name
 
-                        for run in range(num_runs):
-                            config = {
-                                "vehicle_density": density,
-                                "penetration_rate": rate,
-                                "algorithm": algorithm,
-                            }
+                    for run in range(num_runs):
+                        config = {
+                            "vehicle_density": density,
+                            "penetration_rate": rate,
+                            "algorithm": algorithm,
+                        }
 
-                            # Create and run simulation
-                            sim = Simulation(config)
+                        # Create and run simulation
+                        sim = Simulation(config)
 
-                            sim.run(
-                                simulation_time=simulation_time,
-                                visualize=visualize,
-                                dt=0.1,
-                            )
+                        sim.run(
+                            simulation_time=simulation_time,
+                            visualize=visualize,
+                            dt=0.1,
+                        )
 
-                            # Get results
-                            run_results = sim.get_results()
+                        # Get results
+                        run_results = sim.get_results()
 
-                            # Add configuration info to results
-                            result_entry = {
-                                "Vehicle_Density": density,
-                                "Penetration_Rate": rate,
-                                "Algorithm": algorithm_name,
-                                "Run": run,
-                                "EAR_Mean": run_results["EAR"]["mean"],
-                                "EAR_Median": run_results["EAR"]["median"],
-                                "CBR_Mean": run_results["CBR"]["mean"],
-                                "CBR_Median": run_results["CBR"]["median"],
-                                "AOI_Mean": run_results["AOI"]["mean"],
-                                "AOI_Median": run_results["AOI"]["median"],
-                                "CPM_Size_Mean": run_results["CPM_Size"]["mean"],
-                                "CPM_Size_Median": run_results["CPM_Size"]["median"],
-                            }
+                        # Add configuration info to results
+                        result_entry = {
+                            "Vehicle_Density": density,
+                            "Penetration_Rate": rate,
+                            "Algorithm": algorithm_name,
+                            "Run": run,
+                            "EAR_Mean": run_results["EAR"]["mean"],
+                            "EAR_Median": run_results["EAR"]["median"],
+                            "CBR_Mean": run_results["CBR"]["mean"],
+                            "CBR_Median": run_results["CBR"]["median"],
+                            "AOI_Mean": run_results["AOI"]["mean"],
+                            "AOI_Median": run_results["AOI"]["median"],
+                            "CPM_Size_Mean": run_results["CPM_Size"]["mean"],
+                            "CPM_Size_Median": run_results["CPM_Size"]["median"],
+                        }
 
-                            results.append(result_entry)
-                            pbar.update(1)
+                        results.append(result_entry)
+                        pbar.update(1)
 
     # Convert to DataFrame
     results_df = pd.DataFrame(results)

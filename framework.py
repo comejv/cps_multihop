@@ -71,11 +71,13 @@ class ManhattanGrid:
         horizontal_roads.sort()
         vertical_roads.sort()
 
-        # Create buildings in each city block (not at intersections)
+        # Create buildings in each city block
         for i in range(len(horizontal_roads) - 1):
             for j in range(len(vertical_roads) - 1):
                 # Calculate block boundaries
-                x1 = vertical_roads[j] + self.road_width / 2 + 20  # Add margin from road
+                x1 = (
+                    vertical_roads[j] + self.road_width / 2 + 20
+                )  # Add margin from road
                 y1 = horizontal_roads[i] + self.road_width / 2 + 20
                 x2 = vertical_roads[j + 1] - self.road_width / 2 - 20
                 y2 = horizontal_roads[i + 1] - self.road_width / 2 - 20
@@ -89,30 +91,25 @@ class ManhattanGrid:
 
         return obstacles
 
-    def is_in_line_of_sight(self, pos1, pos2):
+    def is_in_line_of_sight(self, v1: "Vehicle", v2: "Vehicle"):
         """Check if two positions have line of sight (not blocked by obstacles)"""
-        x1, y1 = pos1
-        x2, y2 = pos2
+        pos1 = v1.position
+        pos2 = v2.position
+        x1, y1 = v1.position
+        x2, y2 = v2.position
 
         # Find the nearest intersection for each position
         intersection1 = self._find_nearest_intersection(pos1)
         intersection2 = self._find_nearest_intersection(pos2)
 
         # Check if both positions are on the same road
-        on_same_road = self._check_on_same_road(pos1, pos2)
-
-        # If they're on the same road, they have line of sight
-        if on_same_road:
-            if DEBUG_LOS:
-                print(f"Positions on same road: {pos1} and {pos2}")
-            return True
+        on_same_road = self._check_on_same_road(v1, v2)
 
         # If both are near the same intersection, they have line of sight
         if intersection1 is not None and intersection1 == intersection2:
             distance_to_intersection1 = self._distance_to_point(pos1, intersection1)
             distance_to_intersection2 = self._distance_to_point(pos2, intersection2)
 
-            # Define "near intersection" as within 75 meters
             if distance_to_intersection1 < 15 and distance_to_intersection2 < 15:
                 if DEBUG_LOS:
                     print(f"Both positions near same intersection {intersection1}")
@@ -148,27 +145,9 @@ class ManhattanGrid:
         """Calculate Euclidean distance between two points"""
         return np.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
 
-    def _check_on_same_road(self, pos1, pos2):
+    def _check_on_same_road(self, v1: "Vehicle", v2: "Vehicle"):
         """Check if two positions are on the same road"""
-        x1, y1 = pos1
-        x2, y2 = pos2
-
-        # Road width margin to determine if on road
-        margin = self.road_width / 2 + 2  # Add a small buffer
-
-        # Check if both are on the same horizontal road
-        for road in [r for r in self.roads if r["type"] == "horizontal"]:
-            road_y = road["start"][1]
-            if abs(y1 - road_y) <= margin and abs(y2 - road_y) <= margin:
-                return True
-
-        # Check if both are on the same vertical road
-        for road in [r for r in self.roads if r["type"] == "vertical"]:
-            road_x = road["start"][0]
-            if abs(x1 - road_x) <= margin and abs(x2 - road_x) <= margin:
-                return True
-
-        return False
+        return v1.current_road == v2.current_road
 
     def _line_intersects_box(self, x1, y1, x2, y2, box_x1, box_y1, box_x2, box_y2):
         """
@@ -232,7 +211,9 @@ class ManhattanGrid:
             width = obs_x2 - obs_x1
             height = obs_y2 - obs_y1
             ax.add_patch(
-                plt.Rectangle((obs_x1, obs_y1), width, height, color="maroon", alpha=0.5)
+                plt.Rectangle(
+                    (obs_x1, obs_y1), width, height, color="maroon", alpha=0.5
+                )
             )
 
         ax.set_xlim(0, self.total_size)
@@ -361,7 +342,7 @@ class Vehicle:
 
             # Check if object is within sensing range and has line of sight
             if dist <= self.sensing_range and self.environment.is_in_line_of_sight(
-                self.position, obj.position
+                self, obj
             ):
                 # For new objects, set both timestamps to current time
                 if obj_id not in self.objects_detected:
@@ -416,26 +397,9 @@ class Vehicle:
         for obj_data in cpm["objects"]:
             obj_id = obj_data["object_id"]
 
-            # Create a deep copy to avoid modifying the original
-            obj_data_copy = copy.deepcopy(obj_data)
+            # Create a copy to avoid modifying the original
+            obj_data_copy = obj_data.copy()
 
-            # Ensure original_detection_time is preserved
-            if "original_detection_time" not in obj_data_copy:
-                if DEBUG_TIMESTAMPS:
-                    print(
-                        f"WARNING: Missing original_detection_time for object {obj_id}"
-                    )
-                obj_data_copy["original_detection_time"] = obj_data_copy["timestamp"]
-
-            # Ensure update_time is set - use timestamp if not explicitly set
-            if "update_time" not in obj_data_copy:
-                if DEBUG_TIMESTAMPS:
-                    print(
-                        f"DEBUG: Setting update_time for object {obj_id} to its timestamp"
-                    )
-                obj_data_copy["update_time"] = obj_data_copy["timestamp"]
-
-            # CRITICAL: Ensure reception time is never earlier than detection time
             valid_reception_time = max(
                 reception_time, obj_data_copy["original_detection_time"]
             )
@@ -547,9 +511,8 @@ class Vehicle:
                 }
 
                 # Create a copy with updated hop count for forwarding
-                obj_data_copy = copy.deepcopy(obj_data)
+                obj_data_copy = obj_data.copy()
 
-                # CRITICAL: Preserve original_detection_time during forwarding
                 # Make sure original_detection_time exists and is never lost
                 if "original_detection_time" not in obj_data_copy:
                     if DEBUG_TIMESTAMPS:
@@ -591,7 +554,7 @@ class WirelessNetwork:
 
     def simulate_transmission(self, sender, message, current_time, dt):
         """Simulate message transmission with simplified model - only range and LOS checks"""
-        # Calculate transmission time based on message size (keep this for CBR calculation)
+        # Calculate transmission time based on message size
         message_size_bytes = 50 + len(message["objects"]) * 10
         bit_rate = 6e6  # 6 Mbit/s
         transmission_time = (message_size_bytes * 8) / bit_rate
@@ -613,11 +576,8 @@ class WirelessNetwork:
             # Simple check: within range and has line of sight
             if (
                 distance <= self.communication_range
-                and self.environment.is_in_line_of_sight(
-                    sender.position, vehicle.position
-                )
+                and self.environment.is_in_line_of_sight(sender, vehicle)
             ):
-                # Vehicle receives the message
                 vehicle.receive_cpm(message, reception_time)
 
     def get_channel_busy_ratio(self):
@@ -1095,7 +1055,7 @@ class Simulation:
                                     if (
                                         dist <= vehicle.comm_range
                                         and self.environment.is_in_line_of_sight(
-                                            vehicle.position, receiving_vehicle.position
+                                            vehicle, receiving_vehicle
                                         )
                                     ):
                                         recent_communications.append(
@@ -1196,7 +1156,7 @@ class Simulation:
                     )
 
                     plt.draw()
-                    plt.pause(0.01)  # Small pause to update plot
+                    plt.pause(0.2)  # Small pause to update plot
         plt.close()
 
     def get_results(self):
