@@ -17,7 +17,7 @@ logger = logging.getLogger("main")
 
 def run_single_simulation(config, simulation_time, visualize):
     logger.info(
-        f"Running simulations for density={config["vehicle_density"]}, rate={config["penetration_rate"]}, algorithm={config["algorithm"]}"
+        f"Running simulations for density={config['vehicle_density']}, rate={config['penetration_rate']}, algorithm={config['algorithm']}"
     )
 
     sim = Simulation(config)
