@@ -496,9 +496,6 @@ class Vehicle:
             ):
                 continue
 
-            # Create a copy to avoid modifying the original
-            obj_data_copy = copy.deepcopy(obj_data)
-
             # Record reception time if not already recorded
             # This is when the vehicle first received info about this object
             if obj_id not in self.object_reception_times:
@@ -507,10 +504,10 @@ class Vehicle:
             # Update local environment model if newer information is available
             if obj_id not in self.local_environment_model or (
                 self.local_environment_model[obj_id]["timestamp"]
-                < obj_data_copy["timestamp"]
+                < obj_data["timestamp"]
             ):
                 # Store the original data with reception time
-                self.local_environment_model[obj_id] = obj_data_copy
+                self.local_environment_model[obj_id] = obj_data
 
     def run_cps_algorithm(self, current_time, network):
         """Run the CPS algorithm with simplified time handling"""
@@ -606,7 +603,7 @@ class Vehicle:
                 }
 
                 # Create a copy with updated hop count for forwarding
-                obj_data_copy = copy.deepcopy(obj_data)
+                obj_data_copy = obj_data.copy()
 
                 # Only increment hop count for objects from other vehicles in MULTI_HOP mode
                 if (
