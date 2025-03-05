@@ -129,8 +129,11 @@ class ManhattanGrid:
 
         return obstacles
 
-    def is_in_line_of_sight(self, v1: "Vehicle", v2: "Vehicle", all_vehicles=None):
-        """Check if two positions have line of sight (not blocked by obstacles or other vehicles)"""
+    def is_in_line_of_sight(
+        self, v1: "Vehicle", v2: "Vehicle", all_vehicles=None, wireless=False
+    ):
+        """Check if two positions have line of sight
+        (not blocked by obstacles or other vehicles if not wireless)"""
         pos1 = v1.position
         pos2 = v2.position
         x1, y1 = v1.position
@@ -148,7 +151,7 @@ class ManhattanGrid:
             distance_to_intersection1 = self._distance_to_point(pos1, intersection1)
             distance_to_intersection2 = self._distance_to_point(pos2, intersection2)
 
-            if distance_to_intersection1 < 15 and distance_to_intersection2 < 15:
+            if distance_to_intersection1 < 50 and distance_to_intersection2 < 50:
                 if DEBUG_LOS:
                     print(f"Both positions near same intersection {intersection1}")
                 return True
@@ -165,7 +168,7 @@ class ManhattanGrid:
                 return False
 
         # Check if any vehicle blocks LOS
-        if all_vehicles:
+        if not wireless and all_vehicles:
             if self._vehicle_blocks_los(v1, v2, all_vehicles):
                 if DEBUG_LOS:
                     print(f"Line of sight blocked by a vehicle")
@@ -416,9 +419,10 @@ class Vehicle:
 
             dist = self.environment.get_distance(self.position, obj.position)
 
+            vehicles_dict = {v.id: v for v in self.vehicles}
             # Check if object is within sensing range and has line of sight
             if dist <= self.sensing_range and self.environment.is_in_line_of_sight(
-                self, obj
+                self, obj, vehicles_dict
             ):
                 # For new objects, set both timestamps to current time
                 if obj_id not in self.objects_detected:
@@ -431,7 +435,7 @@ class Vehicle:
                         "source_id": self.id,
                         "hop_count": 0,
                         "original_detection_time": current_time,  # First detection
-                        "update_time": current_time,  # Last update (NEW FIELD)
+                        "update_time": current_time,  # Last update
                     }
 
                     # Set first reception time for own detections
@@ -701,7 +705,9 @@ class WirelessNetwork:
             # Check: within range and has line of sight (including vehicle blocking)
             if (
                 distance <= self.communication_range
-                and self.environment.is_in_line_of_sight(sender, vehicle, vehicles_dict)
+                and self.environment.is_in_line_of_sight(
+                    sender, vehicle, vehicles_dict, wireless=True
+                )
             ):
                 vehicle.receive_cpm(message, reception_time)
 
@@ -1176,10 +1182,11 @@ class Simulation:
                                     dist = self.environment.get_distance(
                                         vehicle.position, receiving_vehicle.position
                                     )
+                                    vehicles_dict = {v.id: v for v in self.vehicles}
                                     if (
                                         dist <= vehicle.comm_range
                                         and self.environment.is_in_line_of_sight(
-                                            vehicle, receiving_vehicle
+                                            vehicle, receiving_vehicle, vehicles_dict, wireless=True
                                         )
                                     ):
                                         recent_communications.append(
@@ -1279,7 +1286,7 @@ class Simulation:
                     )
 
                     plt.draw()
-                    plt.pause(0.2)  # Small pause to update plot
+                    plt.pause(0.6)  # Small pause to update plot
         plt.close()
 
     def get_results(self):
