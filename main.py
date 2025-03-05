@@ -149,7 +149,6 @@ def plot_comparison_results(results_df):
     axes[0, 1].set_ylim(0, 1.05)  # Match Figure 3 y-axis
 
     # First set the tick positions, then the labels
-    tick_positions = [0, 1, 2, 3]
     axes[0, 1].set_xticks(tick_positions)
     axes[0, 1].set_xticklabels(["5%", "10%", "25%", "50%"])
 
@@ -164,10 +163,8 @@ def plot_comparison_results(results_df):
     axes[1, 0].set_title("CBR vs Penetration Rate (High Density)")
     axes[1, 0].set_xlabel("Penetration Rate [%]")
     axes[1, 0].set_ylabel("Channel Busy Ratio")
-    axes[1, 0].set_ylim(0, 0.6)  # Match Figure 4 y-axis
 
     # First set the tick positions, then the labels
-    tick_positions = [0.05, 0.1, 0.25, 0.5]
     axes[1, 0].set_xticks(tick_positions)
     axes[1, 0].set_xticklabels(["5%", "10%", "25%", "50%"])
 
@@ -202,7 +199,6 @@ def plot_comparison_results(results_df):
     axes[1, 1].set_title("Age of Information")
     axes[1, 1].set_xlabel("Age of Information [s]")
     axes[1, 1].set_ylabel("Probability")
-    axes[1, 1].set_xlim(0, 1.0)  # Match Figure 6 x-axis
     axes[1, 1].set_ylim(0, 1.0)
     axes[1, 1].legend()
 
@@ -225,7 +221,6 @@ def plot_comparison_results(results_df):
     ax.set_title("Potential Message Size by Algorithm (25% Penetration Rate)")
     ax.set_xlabel("CPS Mode")
     ax.set_ylabel("Potential Message Size [#Objects]")
-    # ax.set_ylim(0, 200)  # Match Figure 5 y-axis
 
     # Custom legend to match paper
     handles, labels = ax.get_legend_handles_labels()
@@ -305,7 +300,7 @@ if __name__ == "__main__":
         penetration_rates = [0.05, 0.1, 0.25, 0.5]  # Match paper's values
         algorithms = [
             ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
-            ForwardingAlgorithm.GBC,  # GBC forwarding
+            # ForwardingAlgorithm.GBC,  # GBC forwarding
             ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
         ]
         num_runs = 10  # 10 runs per configuration as in the paper
