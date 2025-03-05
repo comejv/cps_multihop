@@ -419,10 +419,9 @@ class Vehicle:
 
             dist = self.environment.get_distance(self.position, obj.position)
 
-            vehicles_dict = {v.id: v for v in self.vehicles}
             # Check if object is within sensing range and has line of sight
             if dist <= self.sensing_range and self.environment.is_in_line_of_sight(
-                self, obj, vehicles_dict
+                self, obj, all_objects
             ):
                 # For new objects, set both timestamps to current time
                 if obj_id not in self.objects_detected:
