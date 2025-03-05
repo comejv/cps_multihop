@@ -257,7 +257,7 @@ if __name__ == "__main__":
         # Quick test run with limited configurations
         print("Running quick test simulation...")
         vehicle_densities = [30]
-        penetration_rates = [0.25]
+        penetration_rates = [0.05]
         algorithms = [
             ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
             ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm

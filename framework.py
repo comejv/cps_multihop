@@ -8,9 +8,10 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 
-DEBUG_AOI = False  # Set to True for detailed AOI debugging
-DEBUG_TIMESTAMPS = False  # Set to True for detailed timestamp debugging
+DEBUG_AOI = False
+DEBUG_TIMESTAMPS = False
 DEBUG_LOS = False
+DEBUG_CACHE = False
 
 RANGE_OF_INTEREST = 200  # meters
 
@@ -32,6 +33,9 @@ class ManhattanGrid:
         self.roads = self._create_roads()
         self.intersections = self._create_intersections()
         self.obstacles = self._place_obstacles()
+        self.los_cache = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
 
         # Add vehicle dimensions
         self.vehicle_width = 2.0  # meters
@@ -134,6 +138,30 @@ class ManhattanGrid:
     ):
         """Check if two positions have line of sight
         (not blocked by obstacles or other vehicles if not wireless)"""
+
+        # Check if vehicles are on the same road and lane for caching
+        same_lane = (
+            self._check_on_same_road(v1, v2) and v1.lane_offset == v2.lane_offset
+        )
+
+        # Use cache for same-lane vehicles
+        if same_lane and not wireless:
+            cache_key = (v1.id, v2.id)
+
+            # Check if we have a cache entry
+            if cache_key in self.los_cache:
+                result, (v1_pos, v2_pos) = self.los_cache[cache_key]
+
+                if DEBUG_LOS:
+                    print(
+                        f"Using cached LOS result for vehicles {v1.id} and {v2.id}: {result}"
+                    )
+                self.cache_hits += 1
+                return result
+            else:
+                self.cache_misses += 1
+
+        # Proceed with original LOS calculation if no cache hit
         pos1 = v1.position
         pos2 = v2.position
         x1, y1 = v1.position
@@ -143,9 +171,6 @@ class ManhattanGrid:
         intersection1 = self._find_nearest_intersection(pos1)
         intersection2 = self._find_nearest_intersection(pos2)
 
-        # Check if both positions are on the same road
-        on_same_road = self._check_on_same_road(v1, v2)
-
         # If both are near the same intersection, they have line of sight
         if intersection1 is not None and intersection1 == intersection2:
             distance_to_intersection1 = self._distance_to_point(pos1, intersection1)
@@ -154,6 +179,7 @@ class ManhattanGrid:
             if distance_to_intersection1 < 50 and distance_to_intersection2 < 50:
                 if DEBUG_LOS:
                     print(f"Both positions near same intersection {intersection1}")
+
                 return True
 
         # Check if the line intersects any obstacles (buildings)
@@ -165,6 +191,7 @@ class ManhattanGrid:
                     print(
                         f"Line of sight blocked by building: ({obs_x1}, {obs_y1}) to ({obs_x2}, {obs_y2})"
                     )
+
                 return False
 
         # Check if any vehicle blocks LOS
@@ -172,15 +199,21 @@ class ManhattanGrid:
             if self._vehicle_blocks_los(v1, v2, all_vehicles):
                 if DEBUG_LOS:
                     print(f"Line of sight blocked by a vehicle")
+
+                # Cache result for same-lane vehicles
+                if same_lane:
+                    self.los_cache[(v1.id, v2.id)] = (False, (pos1, pos2))
+
                 return False
+
+        # Cache result for same-lane vehicles
+        if same_lane and not wireless:
+            self.los_cache[(v1.id, v2.id)] = (True, (pos1, pos2))
 
         return True
 
     def _vehicle_blocks_los(self, v1, v2, all_vehicles):
         """Check if any vehicle blocks the line of sight between v1 and v2"""
-        # Skip checking if vehicles are very close to each other
-        if self.get_distance(v1.position, v2.position) < 15:
-            return False
 
         x1, y1 = v1.position
         x2, y2 = v2.position
@@ -211,6 +244,10 @@ class ManhattanGrid:
                         if min_y < v_y < max_y:
                             return True
         return False
+
+    def clear_los_cache(self):
+        """Clear the line of sight cache completely"""
+        self.los_cache = {}
 
     def _find_nearest_intersection(self, position):
         """Find the nearest intersection to a given position"""
@@ -304,7 +341,7 @@ class ManhattanGrid:
 
 
 class Vehicle:
-    """Vehicle class with movement and communication capabilities"""
+    """Vehicle class with simplified time handling"""
 
     def __init__(
         self,
@@ -318,11 +355,9 @@ class Vehicle:
         self.has_cps = has_cps
         self.algorithm = algorithm
 
-        # Add these lines for road following
-        self.current_road = random.choice(self.environment.roads)
-        self.lane_offset = random.choice([-8, 8])  # Different lanes on the road
-
         # Position and movement
+        self.current_road = random.choice(self.environment.roads)
+        self.lane_offset = random.choice([-8, 8])
         self.position = self._init_position()
         self.speed = random.uniform(10, 20)  # m/s
         self.heading = random.choice([0, 90, 180, 270])  # Degrees
@@ -332,25 +367,17 @@ class Vehicle:
         self.comm_range = 200  # meters
         self.objects_detected = {}  # Objects detected by this vehicle
 
-        # CPS related attributes
-        self.local_environment_model = {}  # The LEM as specified in Algorithm 1
-        self.cpm_buffer = []  # CPM buffer for storing received messages
-        self.max_hop_count = 2  # Maximum hops for forwarding (as in the paper)
-        self.last_update_time = {}  # Last time an object was included in a CPM
+        # Time related fields
+        self.local_environment_model = {}  # Objects known to this vehicle
+        self.object_reception_times = {}  # When info about each object was received
+        self.kinematic_update_tracker = {}  # For kinematic trigger checking
+
+        # CPS parameters
+        self.max_hop_count = 2  # Maximum hops for forwarding
         self.aoi_threshold = 1  # second
-
-        self.object_reception_times = {}
-
-        # For periodic execution
         self.last_cpm_generation_time = 0
         self.cpm_generation_interval = 0.1
-
-        # DCC parameters
-        self.dcc_threshold = 0.8
-
-        # Simulation start time tracking
-        self.simulation_start_time = None  # Will be set on first update
-        self.object_update_times = {}  # When objects were last updated (NEW FIELD)
+        self.dcc_threshold = 0.7
 
     def _init_position(self):
         """Initialize vehicle at a random position on its assigned road"""
@@ -405,8 +432,7 @@ class Vehicle:
         self.position = (x, y)
 
     def sense_objects(self, all_objects, current_time):
-        """Detect objects with proper timestamp handling for both new and updated objects"""
-
+        """Detect objects with simplified time handling"""
         if not self.has_cps:
             return {}
 
@@ -423,52 +449,27 @@ class Vehicle:
             if dist <= self.sensing_range and self.environment.is_in_line_of_sight(
                 self, obj, all_objects
             ):
-                # For new objects, set both timestamps to current time
-                if obj_id not in self.objects_detected:
-                    detected[obj_id] = {
-                        "object_id": obj_id,
-                        "position": obj.position,
-                        "speed": obj.speed,
-                        "heading": obj.heading,
-                        "timestamp": current_time,
-                        "source_id": self.id,
-                        "hop_count": 0,
-                        "original_detection_time": current_time,  # First detection
-                        "update_time": current_time,  # Last update
-                    }
+                # Create object data with simplified time fields
+                detected[obj_id] = {
+                    "object_id": obj_id,
+                    "position": obj.position,
+                    "speed": obj.speed,
+                    "heading": obj.heading,
+                    "timestamp": current_time,
+                    "source_id": self.id,
+                    "hop_count": 0,
+                }
 
-                    # Set first reception time for own detections
-                    if obj_id not in self.object_reception_times:
-                        self.object_reception_times[obj_id] = current_time
-
-                    # Set first update time for own detections
-                    if obj_id not in self.object_update_times:
-                        self.object_update_times[obj_id] = current_time
-                else:
-                    # For existing objects, keep original detection time but update other fields
-                    old_object = self.objects_detected[obj_id]
-                    detected[obj_id] = {
-                        "object_id": obj_id,
-                        "position": obj.position,
-                        "speed": obj.speed,
-                        "heading": obj.heading,
-                        "timestamp": current_time,  # Current time
-                        "source_id": self.id,
-                        "hop_count": 0,
-                        "original_detection_time": old_object[
-                            "original_detection_time"
-                        ],  # Keep original
-                        "update_time": current_time,  # New update time (NEW FIELD)
-                    }
-
-                    # Always update the update time
-                    self.object_update_times[obj_id] = current_time
+                # Set reception time for own detections
+                # This represents when the vehicle obtained this information
+                if obj_id not in self.object_reception_times:
+                    self.object_reception_times[obj_id] = current_time
 
         self.objects_detected = detected
         return detected
 
     def receive_cpm(self, cpm, reception_time):
-        """Process received CPM with proper update time tracking"""
+        """Process received CPM with simplified time handling"""
         if not self.has_cps:
             return
 
@@ -476,7 +477,7 @@ class Vehicle:
         for obj_data in cpm["objects"]:
             obj_id = obj_data["object_id"]
 
-            # Skip processing objects that have been forwarded if using NO_FORWARDING
+            # Apply forwarding algorithm filters
             # For NO_FORWARDING, we only accept objects with hop_count=0 (directly sensed)
             if (
                 self.algorithm == ForwardingAlgorithm.NO_FORWARDING
@@ -484,8 +485,7 @@ class Vehicle:
             ):
                 continue
 
-            # For GBC, network layer should handle forwarding, so we only process objects directly
-            # from the sender here at the application layer
+            # For GBC, network layer should handle forwarding
             if self.algorithm == ForwardingAlgorithm.GBC and obj_data["hop_count"] > 0:
                 continue
 
@@ -497,36 +497,23 @@ class Vehicle:
                 continue
 
             # Create a copy to avoid modifying the original
-            obj_data_copy = obj_data.copy()
+            obj_data_copy = copy.deepcopy(obj_data)
 
-            valid_reception_time = max(
-                reception_time, obj_data_copy["original_detection_time"]
-            )
-
-            # Record FIRST reception time if not already recorded
+            # Record reception time if not already recorded
+            # This is when the vehicle first received info about this object
             if obj_id not in self.object_reception_times:
-                self.object_reception_times[obj_id] = valid_reception_time
-                if DEBUG_TIMESTAMPS:
-                    print(
-                        f"DEBUG: First reception of object {obj_id} at time {valid_reception_time}"
-                    )
-
-            # Always update the last update time
-            self.object_update_times[obj_id] = valid_reception_time
-            if DEBUG_TIMESTAMPS:
-                print(f"DEBUG: Updated object {obj_id} at time {valid_reception_time}")
+                self.object_reception_times[obj_id] = reception_time
 
             # Update local environment model if newer information is available
             if obj_id not in self.local_environment_model or (
-                self.local_environment_model[obj_id]["update_time"]
-                < obj_data_copy["update_time"]
+                self.local_environment_model[obj_id]["timestamp"]
+                < obj_data_copy["timestamp"]
             ):
-                # Update reception and valid times
-                obj_data_copy["reception_time"] = valid_reception_time
+                # Store the original data with reception time
                 self.local_environment_model[obj_id] = obj_data_copy
 
     def run_cps_algorithm(self, current_time, network):
-        """Run the CPS algorithm with proper update time tracking"""
+        """Run the CPS algorithm with simplified time handling"""
         if not self.has_cps:
             return None
 
@@ -538,12 +525,10 @@ class Vehicle:
         # Update the last execution time
         self.last_cpm_generation_time = current_time
 
+        # Remove stale objects from LEM
         stale_object_ids = []
         for obj_id, obj_data in self.local_environment_model.items():
-            # Use update_time if available, otherwise fall back to timestamp
-            last_update = obj_data.get("update_time", obj_data.get("timestamp", 0))
-            time_since_update = current_time - last_update
-
+            time_since_update = current_time - obj_data["timestamp"]
             if time_since_update > self.aoi_threshold:
                 stale_object_ids.append(obj_id)
 
@@ -553,24 +538,13 @@ class Vehicle:
 
         # Update local environment model with own detected objects
         for obj_id, obj_data in self.objects_detected.items():
-            # Make sure timestamps are set for own objects
+            # Make sure timestamp is set to current time
             obj_data["timestamp"] = current_time
-            obj_data["update_time"] = current_time  # Always update with latest info
-
-            # Preserve original detection time
-            if "original_detection_time" not in obj_data:
-                obj_data["original_detection_time"] = obj_data.get(
-                    "timestamp", current_time
-                )
-
             self.local_environment_model[obj_id] = obj_data
 
-            # Ensure reception and update times are set for own objects
+            # Update reception time for own objects
             if obj_id not in self.object_reception_times:
                 self.object_reception_times[obj_id] = current_time
-
-            # Always update this field for own objects
-            self.object_update_times[obj_id] = current_time
 
         # Create new CPM
         new_cpm = {
@@ -583,7 +557,6 @@ class Vehicle:
         # Add objects to CPM based on algorithm and kinematic change
         for obj_id, obj_data in self.local_environment_model.items():
             # For NO_FORWARDING and GBC, only include objects detected by this vehicle
-            # GBC forwarding is handled at the network layer, not in this function
             if (
                 self.algorithm == ForwardingAlgorithm.NO_FORWARDING
                 or self.algorithm == ForwardingAlgorithm.GBC
@@ -600,32 +573,32 @@ class Vehicle:
             # Check if we should include this object based on kinematic update rules
             should_include = False
 
-            # Kinematic change trigger logic
-            if obj_id not in self.last_update_time:
+            # Kinematic change trigger logic using simplified tracker
+            if obj_id not in self.kinematic_update_tracker:
+                # First time seeing this object
                 should_include = True
             else:
-                last_time = self.last_update_time[obj_id]["time"]
-                last_pos = self.last_update_time[obj_id]["position"]
-                last_speed = self.last_update_time[obj_id]["speed"]
-                last_heading = self.last_update_time[obj_id]["heading"]
+                last_update = self.kinematic_update_tracker[obj_id]
 
                 # ETSI kinematic update rules
-                time_diff = current_time - last_time
-                pos_diff = self.environment.get_distance(last_pos, obj_data["position"])
-                speed_diff = abs(last_speed - obj_data["speed"])
-                heading_diff = abs(last_heading - obj_data["heading"])
+                time_diff = current_time - last_update["time"]
+                pos_diff = self.environment.get_distance(
+                    last_update["position"], obj_data["position"]
+                )
+                speed_diff = abs(last_update["speed"] - obj_data["speed"])
+                heading_diff = abs(last_update["heading"] - obj_data["heading"])
 
                 if (
                     time_diff > 1.0  # More than 1 second
                     or pos_diff > 4.0  # Position change > 4m
                     or speed_diff > 4.0  # Speed change > 4 m/s
-                    or heading_diff > 4.0
-                ):  # Heading change > 4°
+                    or heading_diff > 4.0  # Heading change > 4°
+                ):
                     should_include = True
 
             if should_include:
                 # Update last inclusion time
-                self.last_update_time[obj_id] = {
+                self.kinematic_update_tracker[obj_id] = {
                     "time": current_time,
                     "position": obj_data["position"],
                     "speed": obj_data["speed"],
@@ -633,23 +606,14 @@ class Vehicle:
                 }
 
                 # Create a copy with updated hop count for forwarding
-                obj_data_copy = obj_data.copy()
+                obj_data_copy = copy.deepcopy(obj_data)
 
-                # Make sure original_detection_time exists and is never lost
-                if "original_detection_time" not in obj_data_copy:
-                    if DEBUG_TIMESTAMPS:
-                        print(
-                            f"WARNING: Missing original_detection_time for object {obj_id} during forwarding"
-                        )
-                    obj_data_copy["original_detection_time"] = obj_data["timestamp"]
-
-                # Only increment hop count for objects from other vehicles and for MULTI_HOP algorithm
+                # Only increment hop count for objects from other vehicles in MULTI_HOP mode
                 if (
                     self.algorithm == ForwardingAlgorithm.MULTI_HOP
                     and obj_data["source_id"] != self.id
                 ):
                     obj_data_copy["hop_count"] += 1
-
                     # Update timestamp to current time for forwarding
                     obj_data_copy["timestamp"] = current_time
 
@@ -805,20 +769,15 @@ class MetricsCollector:
         self.cbr_values.append(cbr)
 
     def calculate_aoi(self, vehicles, current_time):
-        """Calculate Age of Information with optimized performance"""
-        # Create simplified tracking for AOI values
+        """Calculate Age of Information with simplified time handling"""
         aoi_values = []
         algorithm_specific_values = {}
-
-        # Count valid AOI values for reporting
-        valid_count = 0
-        invalid_count = 0
 
         for vehicle in vehicles:
             if not vehicle.has_cps:
                 continue
 
-            # Get algorithm name for final statistics
+            # Get algorithm name for statistics
             algorithm_name = vehicle.algorithm.name
             if algorithm_name not in algorithm_specific_values:
                 algorithm_specific_values[algorithm_name] = []
@@ -829,14 +788,11 @@ class MetricsCollector:
                 if obj_data["source_id"] == vehicle.id:
                     continue
 
-                # KEY OPTIMIZATION: Simplified access to update and reception times
-                # Get update time - when the object state was last updated
-                update_time = obj_data.get("update_time", obj_data.get("timestamp", 0))
+                # Get when the object was last updated (from timestamp)
+                update_time = obj_data["timestamp"]
 
-                # Get reception time - when this vehicle received the info
-                reception_time = vehicle.object_update_times.get(
-                    obj_id, vehicle.object_reception_times.get(obj_id, None)
-                )
+                # Get when the vehicle received this information
+                reception_time = vehicle.object_reception_times.get(obj_id)
 
                 # Skip if we don't have reception time
                 if reception_time is None:
@@ -849,33 +805,12 @@ class MetricsCollector:
                 aoi_ms = (reception_time - update_time) * 1000
 
                 # Basic validation
-                if aoi_ms < 0 or aoi_ms > 10000:  # Skip invalid values
-                    invalid_count += 1
-                    continue
+                if 0 <= aoi_ms <= 10000:  # Skip extreme values
+                    aoi_values.append(aoi_ms)
+                    algorithm_specific_values[algorithm_name].append(aoi_ms)
 
-                # Store valid AOI
-                aoi_values.append(aoi_ms)
-                algorithm_specific_values[algorithm_name].append(aoi_ms)
-                valid_count += 1
-
-        # For final statistics, we only need basic results during simulation
-        if valid_count == 0:
-            if DEBUG_AOI:
-                print("DEBUG AOI: No valid AOI values found")
-            return 0.0
-
-        # OPTIMIZATION: Only compute the mean for real-time feedback
-        mean_aoi = np.mean(aoi_values)
-
-        # Store all valid values for detailed analysis later
-        self.aoi_values.extend(aoi_values)
-
-        # Simple logging only for overall stats
-        if DEBUG_AOI and valid_count > 0:
-            print(f"DEBUG AOI: {valid_count} valid values, {invalid_count} invalid")
-            print(f"DEBUG AOI: Mean AOI = {mean_aoi:.1f}ms")
-
-        return mean_aoi
+        # Return mean AOI
+        return np.mean(aoi_values) if aoi_values else 0.0
 
     def record_cpm_size(self, cpm):
         """Record CPM message size (number of objects)"""
@@ -989,17 +924,6 @@ class Simulation:
         # Reset network counters
         self.network.channel_busy_time = 0
         self.network.total_time = 0
-
-        # Initialize simulation start time for all vehicles
-        for vehicle in self.vehicles:
-            vehicle.simulation_start_time = 0.0
-            # Reset all vehicle tracking dictionaries to ensure clean start
-            vehicle.object_reception_times = {}
-            vehicle.object_update_times = {}
-            vehicle.local_environment_model = {}
-            vehicle.objects_detected = {}
-            vehicle.last_update_time = {}
-            vehicle.last_cpm_generation_time = 0
 
         # Setup visualization if requested
         if visualize:
@@ -1185,7 +1109,10 @@ class Simulation:
                                     if (
                                         dist <= vehicle.comm_range
                                         and self.environment.is_in_line_of_sight(
-                                            vehicle, receiving_vehicle, vehicles_dict, wireless=True
+                                            vehicle,
+                                            receiving_vehicle,
+                                            vehicles_dict,
+                                            wireless=True,
                                         )
                                     ):
                                         recent_communications.append(
@@ -1213,12 +1140,6 @@ class Simulation:
 
                 cbr = self.network.get_channel_busy_ratio()
 
-                # Add this debug line to track data collection
-                if DEBUG_AOI:
-                    print(
-                        f"\nDEBUG: Collecting AOI metrics at time {self.current_time}s"
-                    )
-
                 aoi = self.metrics.calculate_aoi(self.vehicles, self.current_time)
 
                 self.metrics.record_cbr(cbr)
@@ -1226,6 +1147,11 @@ class Simulation:
                 print(
                     f"Time: {self.current_time:.1f}s, EAR: {ear:.3f}, CBR: {cbr:.3f}, Avg AOI: {aoi:.3f}ms"
                 )
+
+                if DEBUG_CACHE:
+                    print(
+                        f"Cache stats : {self.environment.cache_hits}/{self.environment.cache_misses}"
+                    )
 
                 # If we have algorithm-specific data, print that too
                 if isinstance(ear_result, tuple) and len(ear_result) > 1:
