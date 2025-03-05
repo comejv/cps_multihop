@@ -12,6 +12,8 @@ DEBUG_AOI = False  # Set to True for detailed AOI debugging
 DEBUG_TIMESTAMPS = False  # Set to True for detailed timestamp debugging
 DEBUG_LOS = False
 
+RANGE_OF_INTEREST = 200  # meters
+
 
 class ForwardingAlgorithm(Enum):
     NO_FORWARDING = 1  # Baseline ETSI CPS
@@ -31,6 +33,13 @@ class ManhattanGrid:
         self.intersections = self._create_intersections()
         self.obstacles = self._place_obstacles()
 
+        # Add vehicle dimensions
+        self.vehicle_width = 2.0  # meters
+        self.vehicle_length = 5.0  # meters
+
+        # Add road segment mapping for efficiency
+        self.road_segments = self._create_road_segments()
+
     def _create_roads(self):
         """Create horizontal and vertical roads"""
         roads = []
@@ -46,6 +55,35 @@ class ManhattanGrid:
                 {"start": (pos, 0), "end": (pos, self.total_size), "type": "vertical"}
             )
         return roads
+
+    def _create_road_segments(self):
+        """Create a mapping of road segments for efficient vehicle LOS checking"""
+        segments = {}
+
+        for i, road in enumerate(self.roads):
+            road_id = i
+            road_type = road["type"]
+            start, end = road["start"], road["end"]
+
+            # Create road segment identifier
+            if road_type == "horizontal":
+                y = start[1]  # y-coordinate is constant for horizontal roads
+                segments[road_id] = {
+                    "type": "horizontal",
+                    "y": y,
+                    "x_min": min(start[0], end[0]),
+                    "x_max": max(start[0], end[0]),
+                }
+            else:  # vertical
+                x = start[0]  # x-coordinate is constant for vertical roads
+                segments[road_id] = {
+                    "type": "vertical",
+                    "x": x,
+                    "y_min": min(start[1], end[1]),
+                    "y_max": max(start[1], end[1]),
+                }
+
+        return segments
 
     def _create_intersections(self):
         """Identify intersections of roads"""
@@ -91,8 +129,8 @@ class ManhattanGrid:
 
         return obstacles
 
-    def is_in_line_of_sight(self, v1: "Vehicle", v2: "Vehicle"):
-        """Check if two positions have line of sight (not blocked by obstacles)"""
+    def is_in_line_of_sight(self, v1: "Vehicle", v2: "Vehicle", all_vehicles=None):
+        """Check if two positions have line of sight (not blocked by obstacles or other vehicles)"""
         pos1 = v1.position
         pos2 = v2.position
         x1, y1 = v1.position
@@ -115,7 +153,7 @@ class ManhattanGrid:
                     print(f"Both positions near same intersection {intersection1}")
                 return True
 
-        # Otherwise check if the line intersects any obstacles
+        # Check if the line intersects any obstacles (buildings)
         for obs_x1, obs_y1, obs_x2, obs_y2 in self.obstacles:
             if self._line_intersects_box(
                 x1, y1, x2, y2, obs_x1, obs_y1, obs_x2, obs_y2
@@ -126,7 +164,50 @@ class ManhattanGrid:
                     )
                 return False
 
+        # Check if any vehicle blocks LOS
+        if all_vehicles:
+            if self._vehicle_blocks_los(v1, v2, all_vehicles):
+                if DEBUG_LOS:
+                    print(f"Line of sight blocked by a vehicle")
+                return False
+
         return True
+
+    def _vehicle_blocks_los(self, v1, v2, all_vehicles):
+        """Check if any vehicle blocks the line of sight between v1 and v2"""
+        # Skip checking if vehicles are very close to each other
+        if self.get_distance(v1.position, v2.position) < 15:
+            return False
+
+        x1, y1 = v1.position
+        x2, y2 = v2.position
+
+        if self._check_on_same_road(v1, v2) and v1.lane_offset == v2.lane_offset:
+            # If on same road, only check vehicles on that road between them
+            for v_id, vehicle in all_vehicles.items():
+                # Skip the vehicles being checked
+                if v_id == v1.id or v_id == v2.id:
+                    continue
+
+                # Check if vehicle is on the same road
+                if (
+                    vehicle.current_road == v1.current_road
+                    and vehicle.lane_offset == v1.lane_offset
+                ):
+                    v_x, v_y = vehicle.position
+
+                    if v1.current_road["type"] == "horizontal":
+                        # Check if vehicle is between v1 and v2 (x-coordinate)
+                        min_x, max_x = min(x1, x2), max(x1, x2)
+                        if min_x < v_x < max_x:
+                            return True
+
+                    else:  # vertical
+                        # Check if vehicle is between v1 and v2 (y-coordinate)
+                        min_y, max_y = min(y1, y2), max(y1, y2)
+                        if min_y < v_y < max_y:
+                            return True
+        return False
 
     def _find_nearest_intersection(self, position):
         """Find the nearest intersection to a given position"""
@@ -182,10 +263,6 @@ class ManhattanGrid:
                 if u1 > u2:
                     # Line doesn't intersect the box
                     return False
-
-        # Check if endpoints are inside the box - if so, it's not intersecting
-        inside1 = box_x1 <= x1 <= box_x2 and box_y1 <= y1 <= box_y2
-        inside2 = box_x1 <= x2 <= box_x2 and box_y1 <= y2 <= box_y2
 
         # Check if intersection is within the line segment bounds
         if u1 <= u2 and u1 <= 1 and u2 >= 0:
@@ -246,11 +323,10 @@ class Vehicle:
         self.position = self._init_position()
         self.speed = random.uniform(10, 20)  # m/s
         self.heading = random.choice([0, 90, 180, 270])  # Degrees
-        self.lane = random.choice([0, 1])  # 0 = right lane, 1 = left lane
 
         # Sensing and communication
         self.sensing_range = 85  # meters
-        self.comm_range = 300  # meters
+        self.comm_range = 200  # meters
         self.objects_detected = {}  # Objects detected by this vehicle
 
         # CPS related attributes
@@ -258,8 +334,8 @@ class Vehicle:
         self.cpm_buffer = []  # CPM buffer for storing received messages
         self.max_hop_count = 2  # Maximum hops for forwarding (as in the paper)
         self.last_update_time = {}  # Last time an object was included in a CPM
+        self.aoi_threshold = 1  # second
 
-        # IMPORTANT: Initialize with empty dict - don't record any receptions before sim starts
         self.object_reception_times = {}
 
         # For periodic execution
@@ -269,7 +345,7 @@ class Vehicle:
         # DCC parameters
         self.dcc_threshold = 0.8
 
-        # NEW: Simulation start time tracking
+        # Simulation start time tracking
         self.simulation_start_time = None  # Will be set on first update
         self.object_update_times = {}  # When objects were last updated (NEW FIELD)
 
@@ -397,6 +473,26 @@ class Vehicle:
         for obj_data in cpm["objects"]:
             obj_id = obj_data["object_id"]
 
+            # Skip processing objects that have been forwarded if using NO_FORWARDING
+            # For NO_FORWARDING, we only accept objects with hop_count=0 (directly sensed)
+            if (
+                self.algorithm == ForwardingAlgorithm.NO_FORWARDING
+                and obj_data["hop_count"] > 0
+            ):
+                continue
+
+            # For GBC, network layer should handle forwarding, so we only process objects directly
+            # from the sender here at the application layer
+            if self.algorithm == ForwardingAlgorithm.GBC and obj_data["hop_count"] > 0:
+                continue
+
+            # For MULTI_HOP, check that hop count is within limits
+            if (
+                self.algorithm == ForwardingAlgorithm.MULTI_HOP
+                and obj_data["hop_count"] >= self.max_hop_count
+            ):
+                continue
+
             # Create a copy to avoid modifying the original
             obj_data_copy = obj_data.copy()
 
@@ -421,7 +517,6 @@ class Vehicle:
             if obj_id not in self.local_environment_model or (
                 self.local_environment_model[obj_id]["update_time"]
                 < obj_data_copy["update_time"]
-                and obj_data_copy["hop_count"] < self.max_hop_count
             ):
                 # Update reception and valid times
                 obj_data_copy["reception_time"] = valid_reception_time
@@ -439,6 +534,19 @@ class Vehicle:
 
         # Update the last execution time
         self.last_cpm_generation_time = current_time
+
+        stale_object_ids = []
+        for obj_id, obj_data in self.local_environment_model.items():
+            # Use update_time if available, otherwise fall back to timestamp
+            last_update = obj_data.get("update_time", obj_data.get("timestamp", 0))
+            time_since_update = current_time - last_update
+
+            if time_since_update > self.aoi_threshold:
+                stale_object_ids.append(obj_id)
+
+        # Remove stale objects
+        for obj_id in stale_object_ids:
+            del self.local_environment_model[obj_id]
 
         # Update local environment model with own detected objects
         for obj_id, obj_data in self.objects_detected.items():
@@ -469,10 +577,21 @@ class Vehicle:
             "objects": [],
         }
 
-        # Add objects to CPM based on kinematic change
+        # Add objects to CPM based on algorithm and kinematic change
         for obj_id, obj_data in self.local_environment_model.items():
-            # Skip if hop count is already at max
-            if obj_data["hop_count"] >= self.max_hop_count:
+            # For NO_FORWARDING and GBC, only include objects detected by this vehicle
+            # GBC forwarding is handled at the network layer, not in this function
+            if (
+                self.algorithm == ForwardingAlgorithm.NO_FORWARDING
+                or self.algorithm == ForwardingAlgorithm.GBC
+            ) and obj_data["source_id"] != self.id:
+                continue
+
+            # For MULTI_HOP, skip if hop count is already at max
+            if (
+                self.algorithm == ForwardingAlgorithm.MULTI_HOP
+                and obj_data["hop_count"] >= self.max_hop_count
+            ):
                 continue
 
             # Check if we should include this object based on kinematic update rules
@@ -521,8 +640,11 @@ class Vehicle:
                         )
                     obj_data_copy["original_detection_time"] = obj_data["timestamp"]
 
-                # Important: Only increment hop count for objects from other vehicles
-                if obj_data["source_id"] != self.id:
+                # Only increment hop count for objects from other vehicles and for MULTI_HOP algorithm
+                if (
+                    self.algorithm == ForwardingAlgorithm.MULTI_HOP
+                    and obj_data["source_id"] != self.id
+                ):
                     obj_data_copy["hop_count"] += 1
 
                     # Update timestamp to current time for forwarding
@@ -573,10 +695,13 @@ class WirelessNetwork:
             # Calculate distance
             distance = self.environment.get_distance(sender.position, vehicle.position)
 
-            # Simple check: within range and has line of sight
+            # Get vehicles dict from simulation
+            vehicles_dict = {v.id: v for v in self.vehicles}
+
+            # Check: within range and has line of sight (including vehicle blocking)
             if (
                 distance <= self.communication_range
-                and self.environment.is_in_line_of_sight(sender, vehicle)
+                and self.environment.is_in_line_of_sight(sender, vehicle, vehicles_dict)
             ):
                 vehicle.receive_cpm(message, reception_time)
 
@@ -598,7 +723,7 @@ class MetricsCollector:
         self.aoi_values = []  # Age of Information
         self.cpm_sizes = []  # CPM message sizes
 
-    def calculate_ear(self, vehicles, all_objects, current_time, aoi_threshold=1.0):
+    def calculate_ear(self, vehicles, all_objects, current_time):
         """Calculate Environmental Awareness Ratio with improved performance"""
         total_objects_in_range = 0
         perceived_objects = 0
@@ -640,7 +765,7 @@ class MetricsCollector:
                 # Use cached distance
                 dist = distance_cache.get((vehicle_id, obj_id), float("inf"))
 
-                if dist <= vehicle.sensing_range:
+                if dist <= RANGE_OF_INTEREST:
                     objects_in_range += 1
 
                     # Check if object is perceived through sensors or V2X
@@ -653,8 +778,7 @@ class MetricsCollector:
                     # Through V2X (in local environment model)
                     elif obj_id in vehicle.local_environment_model:
                         obj_data = vehicle.local_environment_model[obj_id]
-                        if current_time - obj_data["timestamp"] <= aoi_threshold:
-                            is_perceived = True
+                        is_perceived = True
 
                     if is_perceived:
                         objects_perceived += 1
@@ -1100,8 +1224,7 @@ class Simulation:
                 # If we have algorithm-specific data, print that too
                 if isinstance(ear_result, tuple) and len(ear_result) > 1:
                     for alg, ear_val in algorithm_ear.items():
-                        if ear_val < 1.0:  # Only print if there are actually objects
-                            print(f"  - {alg} EAR: {ear_val:.3f}")
+                        print(f"  - {alg} EAR: {ear_val:.3f}")
 
                 # Update visualization every 1 second if enabled
                 if visualize:
