@@ -53,6 +53,7 @@ vanet-collective-perception/
 ├── network.py           # Wireless network simulation
 ├── simulation.py        # Core simulation logic
 ├── vehicle.py           # Vehicle class with CPS implementation
+├── utils.py             # Utility functions
 ├── results/             # Directory for simulation results
 │   ├── csvs/            # CSV result files
 │   └── plots/           # Generated plots
@@ -94,17 +95,22 @@ Enables real-time visualization of the simulation.
 ### Additional Options
 
 ```
---console-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
-                      Console logging level (default: INFO)
---file-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
-                      File logging level (default: WARNING)
---log-dir LOG_DIR     Directory for log files
---log-components {simulation,environment,vehicle,network,metrics}
-                      Set specific components to DEBUG level
---threads THREADS     Number of threads for parallel execution
---num-runs NUM_RUNS   Number of simulation runs per configuration
---experiment-tag TAG  Tag to add to output filenames
---load-csv CSV_FILE   Load results from CSV file instead of running simulations
+  -h, --help            show this help message and exit
+  --visualize           Visualize the simulation
+  --quick               Run a quick test with fewer configurations
+  --load-csv LOAD_CSV   Load results from CSV file instead of running simulations
+  --experiment-tag EXPERIMENT_TAG
+                        Optional tag to add to output filenames
+  --exit-on-first       Exit after first simulation
+  --threads THREADS     Set the number of available threads for the simulations
+  --num-runs NUM_RUNS   Choose the number of runs per configuration
+  --console-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        Console logging level
+  --file-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        File logging level
+  --log-dir LOG_DIR     Directory for log files
+  --log-components {simulation,environment,vehicle,network,metrics} [{simulation,environment,vehicle,network,metrics} ...]
+                        Set specific components to DEBUG level
 ```
 
 ## Implemented Algorithms
