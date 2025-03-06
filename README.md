@@ -8,9 +8,8 @@ This simulation evaluates different forwarding algorithms for the Collective Per
 
 - A realistic Manhattan grid environment with buildings and roads
 - Vehicle movement simulation with realistic parameters
-- Implementation of three CPS modes:
+- Implementation of two CPS modes:
   - Standard ETSI CPS (no forwarding)
-  - Geographically-Scoped Broadcast (GBC) forwarding
   - Application layer multi-hop forwarding (proposed algorithm)
 - Metrics collection for:
   - Environmental Awareness Ratio (EAR)
@@ -111,8 +110,7 @@ Enables real-time visualization of the simulation.
 ## Implemented Algorithms
 
 1. **NO_FORWARDING**: Baseline ETSI CPS implementation without any forwarding mechanism.
-2. **GBC**: Geographically-Scoped Broadcast forwarding at the network layer. **[NOT IMPLEMENTED]**
-3. **MULTI_HOP**: Application layer multi-hop forwarding as proposed in the Wolff et al. paper.
+2. **MULTI_HOP**: Application layer multi-hop forwarding as proposed in the Wolff et al. paper.
 
 ## Example Output
 
