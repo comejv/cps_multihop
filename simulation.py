@@ -10,9 +10,16 @@ from algenum import ForwardingAlgorithm
 from environment import ManhattanGrid
 from metrics import MetricsCollector
 from network import WirelessNetwork
+from utils import *
 from vehicle import Vehicle
 
 sim_logger = getLogger("simulation")
+
+
+class SimulationStopException(Exception):
+    """Exception raised to signal that the simulation should stop"""
+
+    pass
 
 
 class Simulation:
@@ -53,7 +60,6 @@ class Simulation:
             vehicle = Vehicle(i, self.environment, has_cps, algorithm)
             self.vehicles.append(vehicle)
 
-    # Update the visualization part of the run method
     def run(self, simulation_time, dt=0.01, visualize=False):
         """Run simulation for a specified time with proper time sequencing"""
         num_steps = int(simulation_time / dt)
@@ -71,7 +77,31 @@ class Simulation:
             ax = plt.subplot(1, 1, 1)
             plt.ion()  # Turn on interactive mode
 
-            # Draw static environment elements - UPDATED: Draw roads with actual width
+            # Add a button for stopping the simulation
+            from matplotlib.widgets import Button
+
+            stop_ax = plt.axes([0.81, 0.01, 0.1, 0.04])
+            stop_button = Button(stop_ax, "Stop")
+
+            # Define callback function
+            def stop_simulation(event):
+                nonlocal stop_requested
+                stop_requested = True
+
+                # Set the stop flag for all processes
+                set_stop_flag()
+
+                plt.close()  # Close the plot immediately
+
+                # Raise an exception that will be caught in the main program
+                raise SimulationStopException(
+                    "Simulation stopped by user (Stop button)"
+                )
+
+            stop_button.on_clicked(stop_simulation)
+            stop_requested = False
+
+            # Draw static environment elements
             for road in self.environment.roads:
                 start, end = road["start"], road["end"]
                 # Calculate road rectangle coordinates
@@ -146,7 +176,7 @@ class Simulation:
             ax.set_aspect("equal")
             ax.set_title("VANET Simulation with Realistic Urban Environment")
 
-            # Create legend with updated descriptions
+            # Create legend
             legend_elements = [
                 Line2D(
                     [0],
@@ -204,154 +234,188 @@ class Simulation:
             )
 
         vehicles_dict = {v.id: v for v in self.vehicles}
-        for step in range(num_steps):
-            # Update the current simulation time FIRST
-            self.current_time = step * dt
 
-            # Update total time for CBR calculation
-            self.network.total_time += dt
+        try:
+            for step in range(num_steps):
+                # Check if stop has been requested
+                if (
+                    step % 10 == 0 and check_stop_flag()
+                ):  # Check every 10 steps to reduce overhead
+                    sim_logger.info("Stop flag detected, terminating simulation")
+                    raise SimulationStopException("Stop requested via stop flag")
 
-            sim_logger.debug(f"Simulation step {step}, time = {self.current_time}")
+                # Update the current simulation time FIRST
+                self.current_time = step * dt
 
-            # 1. First, move all vehicles
-            for vehicle in self.vehicles:
-                vehicle.move(dt)
+                # Update total time for CBR calculation
+                self.network.total_time += dt
 
-            # 2. Then, have all vehicles sense objects
-            for vehicle in self.vehicles:
-                # Pass the current time to ensure consistent timestamps
-                vehicle.sense_objects(vehicles_dict, self.current_time)
+                sim_logger.debug(f"Simulation step {step}, time = {self.current_time}")
 
-            # 3. Finally, process communications - this must come after sensing
-            recent_communications = []  # Track for visualization
+                # 1. First, move all vehicles
+                for vehicle in self.vehicles:
+                    vehicle.move(dt)
 
-            for vehicle in self.vehicles:
-                if vehicle.has_cps:
-                    # Run the CPS algorithm
-                    cpm = vehicle.run_cps_algorithm(self.current_time, self.network)
+                # 2. Then, have all vehicles sense objects
+                for vehicle in self.vehicles:
+                    # Pass the current time to ensure consistent timestamps
+                    vehicle.sense_objects(vehicles_dict, self.current_time)
 
-                    if cpm:
-                        # Record CPM size
-                        self.metrics.record_cpm_size(cpm)
+                # 3. Finally, process communications - this must come after sensing
+                recent_communications = []  # Track for visualization
 
-                        # Store communication for visualization
-                        if visualize:
-                            for receiving_vehicle in self.vehicles:
-                                if (
-                                    receiving_vehicle.id != vehicle.id
-                                    and receiving_vehicle.has_cps
-                                ):
-                                    dist = self.environment.get_distance(
-                                        vehicle.position, receiving_vehicle.position
-                                    )
-                                    vehicles_dict = {v.id: v for v in self.vehicles}
+                for vehicle in self.vehicles:
+                    if vehicle.has_cps:
+                        # Run the CPS algorithm
+                        cpm = vehicle.run_cps_algorithm(self.current_time, self.network)
+
+                        if cpm:
+                            # Record CPM size
+                            self.metrics.record_cpm_size(cpm)
+
+                            # Store communication for visualization
+                            if visualize:
+                                for receiving_vehicle in self.vehicles:
                                     if (
-                                        dist <= vehicle.comm_range
-                                        and self.environment.is_in_line_of_sight(
-                                            vehicle,
-                                            receiving_vehicle,
-                                            vehicles_dict,
-                                            wireless=True,
-                                        )
+                                        receiving_vehicle.id != vehicle.id
+                                        and receiving_vehicle.has_cps
                                     ):
-                                        recent_communications.append(
-                                            (
-                                                vehicle.position,
-                                                receiving_vehicle.position,
-                                            )
+                                        dist = self.environment.get_distance(
+                                            vehicle.position, receiving_vehicle.position
                                         )
+                                        vehicles_dict = {v.id: v for v in self.vehicles}
+                                        if (
+                                            dist <= vehicle.comm_range
+                                            and self.environment.is_in_line_of_sight(
+                                                vehicle,
+                                                receiving_vehicle,
+                                                vehicles_dict,
+                                                wireless=True,
+                                            )
+                                        ):
+                                            recent_communications.append(
+                                                (
+                                                    vehicle.position,
+                                                    receiving_vehicle.position,
+                                                )
+                                            )
 
-                        # Simulate transmission with current_time
-                        self.network.simulate_transmission(
-                            vehicle, cpm, self.current_time, dt
-                        )
+                            # Simulate transmission with current_time
+                            self.network.simulate_transmission(
+                                vehicle, cpm, self.current_time, dt
+                            )
 
-            # Collect metrics every 1 second
-            if step % int(1 / dt) == 0:
-                ear_result = self.metrics.calculate_ear(
-                    self.vehicles, {v.id: v for v in self.vehicles}, self.current_time
-                )
-                # Handle if ear_result is a tuple (ear, algorithm_ear)
-                if isinstance(ear_result, tuple):
-                    ear, algorithm_ear = ear_result
-                else:
-                    ear = ear_result
-
-                cbr = self.network.get_channel_busy_ratio()
-
-                aoi = self.metrics.calculate_aoi(self.vehicles, self.current_time)
-
-                self.metrics.record_cbr(cbr)
-
-                sim_logger.info(
-                    f"Time: {self.current_time:.1f}s, EAR: {ear:.3f}, CBR: {cbr:.3f}, Avg AOI: {aoi:.3f}ms"
-                )
-
-                sim_logger.debug(
-                    f"Cache stats : {self.environment.cache_hits}/{self.environment.cache_misses}"
-                )
-
-                # If we have algorithm-specific data, print that too
-                if isinstance(ear_result, tuple) and len(ear_result) > 1:
-                    for alg, ear_val in algorithm_ear.items():
-                        sim_logger.info(f"  - {alg} EAR: {ear_val:.3f}")
-
-                # Update visualization every 1 second if enabled
-                if visualize:
-                    # Clear previous communication lines
-                    for line in comm_lines:
-                        try:
-                            line.remove()
-                        except:
-                            pass  # In case the line was already removed
-                    comm_lines = []
-
-                    # Update vehicle positions
-                    regular_vehicles = [
-                        (v.position[0], v.position[1])
-                        for v in self.vehicles
-                        if not v.has_cps
-                    ]
-                    cps_vehicles = [
-                        (v.position[0], v.position[1])
-                        for v in self.vehicles
-                        if v.has_cps
-                    ]
-
-                    if regular_vehicles:
-                        x, y = zip(*regular_vehicles)
-                        regular_vehicles_scatter.set_offsets(np.column_stack([x, y]))
+                # Collect metrics every 1 second
+                if step % int(1 / dt) == 0:
+                    ear_result = self.metrics.calculate_ear(
+                        self.vehicles,
+                        {v.id: v for v in self.vehicles},
+                        self.current_time,
+                    )
+                    # Handle if ear_result is a tuple (ear, algorithm_ear)
+                    if isinstance(ear_result, tuple):
+                        ear, algorithm_ear = ear_result
                     else:
-                        regular_vehicles_scatter.set_offsets(np.column_stack([[], []]))
+                        ear = ear_result
 
-                    if cps_vehicles:
-                        x, y = zip(*cps_vehicles)
-                        cps_vehicles_scatter.set_offsets(np.column_stack([x, y]))
-                    else:
-                        cps_vehicles_scatter.set_offsets(np.column_stack([[], []]))
+                    cbr = self.network.get_channel_busy_ratio()
 
-                    # Visualize recent communications (limit to last 20 to avoid clutter)
-                    for i, (sender_pos, receiver_pos) in enumerate(
-                        recent_communications
-                    ):
-                        line = ax.plot(
-                            [sender_pos[0], receiver_pos[0]],
-                            [sender_pos[1], receiver_pos[1]],
-                            "r-",
-                            alpha=0.3,
-                            linewidth=1,
-                        )[0]
-                        comm_lines.append(line)
+                    aoi = self.metrics.calculate_aoi(self.vehicles, self.current_time)
 
-                    # Update stats text
-                    stats_text.set_text(
-                        f"Time: {self.current_time:.1f}s\nEAR: {ear:.3f}\nCBR: {cbr:.3f}\nAOI: {aoi:.3f}ms"
+                    self.metrics.record_cbr(cbr)
+
+                    sim_logger.info(
+                        f"Time: {self.current_time:.1f}s, EAR: {ear:.3f}, CBR: {cbr:.3f}, Avg AOI: {aoi:.3f}ms"
                     )
 
-                    plt.draw()
-                    plt.pause(0.6)  # Small pause to update plot
-        if visualize:
-            plt.close()
+                    sim_logger.debug(
+                        f"Cache stats : {self.environment.cache_hits}/{self.environment.cache_misses}"
+                    )
+
+                    # If we have algorithm-specific data, print that too
+                    if isinstance(ear_result, tuple) and len(ear_result) > 1:
+                        for alg, ear_val in algorithm_ear.items():
+                            sim_logger.info(f"  - {alg} EAR: {ear_val:.3f}")
+
+                    # Update visualization every 1 second if enabled
+                    if visualize:
+                        # Clear previous communication lines
+                        for line in comm_lines:
+                            try:
+                                line.remove()
+                            except:
+                                pass  # In case the line was already removed
+                        comm_lines = []
+
+                        # Update vehicle positions
+                        regular_vehicles = [
+                            (v.position[0], v.position[1])
+                            for v in self.vehicles
+                            if not v.has_cps
+                        ]
+                        cps_vehicles = [
+                            (v.position[0], v.position[1])
+                            for v in self.vehicles
+                            if v.has_cps
+                        ]
+
+                        if regular_vehicles:
+                            x, y = zip(*regular_vehicles)
+                            regular_vehicles_scatter.set_offsets(
+                                np.column_stack([x, y])
+                            )
+                        else:
+                            regular_vehicles_scatter.set_offsets(
+                                np.column_stack([[], []])
+                            )
+
+                        if cps_vehicles:
+                            x, y = zip(*cps_vehicles)
+                            cps_vehicles_scatter.set_offsets(np.column_stack([x, y]))
+                        else:
+                            cps_vehicles_scatter.set_offsets(np.column_stack([[], []]))
+
+                        # Visualize recent communications (limit to last 20 to avoid clutter)
+                        for i, (sender_pos, receiver_pos) in enumerate(
+                            recent_communications
+                        ):
+                            line = ax.plot(
+                                [sender_pos[0], receiver_pos[0]],
+                                [sender_pos[1], receiver_pos[1]],
+                                "r-",
+                                alpha=0.3,
+                                linewidth=1,
+                            )[0]
+                            comm_lines.append(line)
+
+                        # Update stats text
+                        stats_text.set_text(
+                            f"Time: {self.current_time:.1f}s\nEAR: {ear:.3f}\nCBR: {cbr:.3f}\nAOI: {aoi:.3f}ms"
+                        )
+
+                        plt.draw()
+                        plt.pause(0.6)  # Small pause to update plot
+
+        except KeyboardInterrupt:
+            sim_logger.critical("Simulation stopped by user (Keyboard Interrupt)")
+            if visualize:
+                plt.close()
+            # Set the stop flag for all processes
+            set_stop_flag()
+            # Re-raise as SimulationStopException to propagate upward
+            raise SimulationStopException("Simulation stopped by keyboard interrupt")
+
+        except SimulationStopException as e:
+            # Set the stop flag for all processes
+            set_stop_flag()
+            # Pass this up to be caught by the main program
+            if visualize:
+                plt.close()
+            raise
+
+        finally:
+            if visualize:
+                plt.close()
 
     def get_results(self):
         """Get simulation results"""

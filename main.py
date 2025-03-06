@@ -2,6 +2,7 @@ import argparse
 import concurrent.futures
 import datetime
 import logging
+import multiprocessing
 import os
 from functools import partial
 
@@ -12,32 +13,8 @@ import seaborn as sns
 from tqdm import tqdm
 
 from log_config import set_component_level, setup_logging
-from simulation import ForwardingAlgorithm, Simulation
-
-logger = logging.getLogger("main")
-
-
-def generate_unique_filename(prefix, extension, folder=None):
-    """Generate a unique filename with timestamp"""
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{prefix}_{timestamp}.{extension}"
-
-    if folder:
-        # Create folder if it doesn't exist
-        os.makedirs(folder, exist_ok=True)
-        return os.path.join(folder, filename)
-    else:
-        return filename
-
-
-def setup_result_folders():
-    """Create folder structure for results"""
-    folders = {"base": "results", "csv": "results/csvs", "plots": "results/plots"}
-
-    for folder in folders.values():
-        os.makedirs(folder, exist_ok=True)
-
-    return folders
+from simulation import ForwardingAlgorithm, Simulation, SimulationStopException
+from utils import *
 
 
 def run_single_simulation(config, simulation_time, visualize):
@@ -46,7 +23,11 @@ def run_single_simulation(config, simulation_time, visualize):
     )
 
     sim = Simulation(config)
-    sim.run(simulation_time=simulation_time, visualize=visualize, dt=0.1)
+    sim.run(
+        simulation_time=simulation_time,
+        visualize=visualize,
+        dt=0.1,
+    )
     return sim.get_results()
 
 
@@ -58,11 +39,14 @@ def run_experiment_parallel(
     simulation_time=15,
     visualize=False,
     max_workers=None,
-    mute=True,
+    exit_on_first=False,
 ):
     """Parallelized version of run_experiment using ProcessPoolExecutor"""
     results = []
     configs = []
+
+    # Clear any existing stop flag at the beginning
+    clear_stop_flag()
 
     # Create all configurations first
     for density in vehicle_densities:
@@ -86,41 +70,110 @@ def run_experiment_parallel(
         run_single_simulation, simulation_time=simulation_time, visualize=visualize
     )
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(sim_func, config) for config, _, _, _, _ in configs]
+    futures = []
+    executor = None
 
-        for future, (config, algorithm_name, density, rate, run) in zip(
-            concurrent.futures.as_completed(futures), configs
-        ):
-            try:
-                run_results = future.result()
+    try:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers
+        ) as executor:
+            # Submit all tasks
+            futures = [
+                executor.submit(sim_func, config) for config, _, _, _, _ in configs
+            ]
 
-                # Add configuration info to results
-                result_entry = {
-                    "Vehicle_Density": density,
-                    "Penetration_Rate": rate,
-                    "Algorithm": algorithm_name,
-                    "Run": run,
-                    "EAR_Mean": run_results["EAR"]["mean"],
-                    "EAR_Median": run_results["EAR"]["median"],
-                    "CBR_Mean": run_results["CBR"]["mean"],
-                    "CBR_Median": run_results["CBR"]["median"],
-                    "AOI_Mean": run_results["AOI"]["mean"],
-                    "AOI_Median": run_results["AOI"]["median"],
-                    "CPM_Size_Mean": run_results["CPM_Size"]["mean"],
-                    "CPM_Size_Median": run_results["CPM_Size"]["median"],
-                }
+            # Process as they complete
+            for future, (config, algorithm_name, density, rate, run) in zip(
+                concurrent.futures.as_completed(futures), configs
+            ):
+                # Check if stop has been requested before processing result
+                if check_stop_flag():
+                    logger.info("Stop flag detected, cancelling remaining futures")
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    executor.shutdown(wait=False)
+                    break
 
-                results.append(result_entry)
-                logger.debug(f"Run {run+1} completed")
+                try:
+                    run_results = future.result()
 
-            except Exception as e:
-                logger.error(f"Error in simulation: {e}")
+                    # Process results and add to results list
+                    result_entry = {
+                        "Vehicle_Density": density,
+                        "Penetration_Rate": rate,
+                        "Algorithm": algorithm_name,
+                        "Run": run,
+                        "EAR_Mean": run_results["EAR"]["mean"],
+                        "EAR_Median": run_results["EAR"]["median"],
+                        "CBR_Mean": run_results["CBR"]["mean"],
+                        "CBR_Median": run_results["CBR"]["median"],
+                        "AOI_Mean": run_results["AOI"]["mean"],
+                        "AOI_Median": run_results["AOI"]["median"],
+                        "CPM_Size_Mean": run_results["CPM_Size"]["mean"],
+                        "CPM_Size_Median": run_results["CPM_Size"]["median"],
+                    }
 
-    # Convert to DataFrame
-    results_df = pd.DataFrame(results)
-    logger.info(f"Experiment completed with {len(results_df)} results")
-    return results_df
+                    results.append(result_entry)
+                    logger.debug(f"Run {run+1} completed")
+
+                    # Add early exit condition if requested
+                    if exit_on_first:
+                        logger.info("Exiting after first simulation as requested")
+                        set_stop_flag()  # Set the stop flag
+                        for f in futures:
+                            if not f.done():
+                                f.cancel()
+                        executor.shutdown(wait=False)
+                        break
+
+                except SimulationStopException as e:
+                    logger.info(f"Simulation stop requested: {str(e)}")
+                    # Set the stop flag
+                    set_stop_flag()
+                    # Cancel all pending futures
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    executor.shutdown(wait=False)
+                    break
+                except Exception as e:
+                    logger.error(f"Error in simulation: {e}")
+                    set_stop_flag()  # Stop other processes on error
+                    # Cancel all pending futures
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    executor.shutdown(wait=False)
+                    break
+
+    except (KeyboardInterrupt, SimulationStopException) as e:
+        logger.info(f"Experiment stopped.")
+        # Set the stop flag
+        set_stop_flag()
+        # Cancel any pending futures
+        for f in futures:
+            if not f.done():
+                f.cancel()
+        if executor:
+            executor.shutdown(wait=False)
+
+    finally:
+        # Always clean up the stop flag at the end
+        clear_stop_flag()
+
+    # Save partial results if we have any
+    if results:
+        results_df = pd.DataFrame(results)
+        # Save results to CSV
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path = os.path.join("results/csvs", f"results_{timestamp}.csv")
+        results_df.to_csv(csv_path, index=False)
+        logger.info(f"Results saved to {csv_path}")
+        return results_df
+    else:
+        logger.warning("No results to save")
+        return pd.DataFrame()
 
 
 def plot_aoi_data(results_df, ax, title="Age of Information"):
@@ -236,6 +289,26 @@ def plot_comparison_results(results_df, output_folder, experiment_tag=""):
         Optional tag to add to filenames for better organization
     """
     logger.info("Plotting results...")
+
+    if results_df.empty:
+        logger.warning("No results to plot - DataFrame is empty")
+
+        # Create a simple plot with a message instead
+        fig, ax = plt.figure(figsize=(10, 6)), plt.gca()
+        ax.text(
+            0.5,
+            0.5,
+            "No simulation results to display.\nSimulation was stopped early.",
+            ha="center",
+            va="center",
+            fontsize=14,
+        )
+        ax.set_title("Simulation Results")
+        ax.set_axis_off()
+
+        plt.close()
+        return
+
     # Set seaborn style
     sns.set(style="whitegrid")
 
@@ -366,11 +439,26 @@ if __name__ == "__main__":
         default="",
         help="Optional tag to add to output filenames",
     )
+    parser.add_argument(
+        "--exit-on-first", action="store_true", help="Exit after first simulation"
+    )
+    parser.add_argument(
+        "--threads",
+        default=None,
+        type=int,
+        help="Set the number of available threads for the simulations",
+    )
+    parser.add_argument(
+        "--num-runs",
+        default=10,
+        type=int,
+        help="Choose the number of runs per configuration",
+    )
 
     # Add logging arguments
     parser.add_argument(
         "--console-level",
-        default="INFO",
+        default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Console logging level",
     )
@@ -387,8 +475,6 @@ if __name__ == "__main__":
         choices=["simulation", "environment", "vehicle", "network", "metrics"],
         help="Set specific components to DEBUG level",
     )
-    parser.add_argument("--threads", default=None, type=int)
-    parser.add_argument("--num-runs", default=10, type=int)
 
     args = parser.parse_args()
 
@@ -399,11 +485,8 @@ if __name__ == "__main__":
         log_dir=args.log_dir,
     )
 
-    # Set specific components to DEBUG if requested
-    if args.log_components:
-        for component in args.log_components:
-            set_component_level(component, logging.DEBUG)
-            logger.info(f"Set {component} logging to DEBUG level")
+    logger = logging.getLogger("main")
+    set_component_level("main", console_level=logging.INFO)
 
     logger.info("VANET Simulation starting")
 
@@ -470,6 +553,7 @@ if __name__ == "__main__":
             simulation_time=simulation_time,
             visualize=args.visualize,
             max_workers=args.threads,
+            exit_on_first=args.exit_on_first,
         )
 
         # Generate unique filename for CSV

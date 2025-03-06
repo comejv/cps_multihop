@@ -94,7 +94,6 @@ class MetricsCollector:
 
     def calculate_aoi(self, vehicles, current_time):
         """Calculate Age of Information with accurate tracking"""
-        aoi_values = []
 
         for vehicle in vehicles:
             if not vehicle.has_cps:
@@ -119,13 +118,12 @@ class MetricsCollector:
                 aoi_ms = (reception_time - update_time) * 1000
 
                 # Basic validation - accept small positive values
-                if aoi_ms <= 0 or aoi_ms >= 5:  # Skip extreme values
+                if aoi_ms <= 0 or aoi_ms >= 1001:
                     metrics_logger.warn(f"Abnormal AOI value : {aoi_ms}")
-                    self.aoi_values.append(aoi_ms)
-                    aoi_values.append(aoi_ms)
+                self.aoi_values.append(aoi_ms)
 
         # Return mean AOI and make sure we don't return zero
-        mean_aoi = np.mean(aoi_values) if aoi_values else 0.0
+        mean_aoi = np.mean(self.aoi_values) if self.aoi_values else 0.0
 
         if mean_aoi == 0.0 and len(vehicles) > 0:
             metrics_logger.error("Null AOI mean")
