@@ -1,6 +1,8 @@
 import argparse
 import concurrent.futures
+import datetime
 import logging
+import os
 from functools import partial
 
 import matplotlib.pyplot as plt
@@ -13,6 +15,29 @@ from log_config import set_component_level, setup_logging
 from simulation import ForwardingAlgorithm, Simulation
 
 logger = logging.getLogger("main")
+
+
+def generate_unique_filename(prefix, extension, folder=None):
+    """Generate a unique filename with timestamp"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{prefix}_{timestamp}.{extension}"
+
+    if folder:
+        # Create folder if it doesn't exist
+        os.makedirs(folder, exist_ok=True)
+        return os.path.join(folder, filename)
+    else:
+        return filename
+
+
+def setup_result_folders():
+    """Create folder structure for results"""
+    folders = {"base": "results", "csv": "results/csvs", "plots": "results/plots"}
+
+    for folder in folders.values():
+        os.makedirs(folder, exist_ok=True)
+
+    return folders
 
 
 def run_single_simulation(config, simulation_time, visualize):
@@ -98,7 +123,106 @@ def run_experiment_parallel(
     return results_df
 
 
-def plot_comparison_results(results_df):
+def plot_aoi_data(results_df, ax, title="Age of Information"):
+    """
+    Create an improved AOI graph that handles small values (< 1)
+    and scales appropriately for vehicular network data
+
+    Parameters:
+    -----------
+    results_df : pandas.DataFrame
+        DataFrame containing simulation results
+    ax : matplotlib.axes.Axes
+        Axis to plot on
+    title : str
+        Title for the plot
+    """
+    # Check if all AOI values are exactly zero
+    if (results_df["AOI_Mean"] == 0).all():
+        # Display a message on the plot instead of empty data
+        ax.text(
+            0.5,
+            0.5,
+            "AOI data not available - all values are zero.\n"
+            "This may indicate an issue with AOI calculation in metrics.py.",
+            horizontalalignment="center",
+            verticalalignment="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.5),
+        )
+
+        ax.set_title(f"{title} (NO DATA)")
+        ax.set_xlabel("Age of Information [ms]")
+        ax.set_ylabel("Probability")
+
+        # Add empty axis with reasonable bounds
+        ax.set_xlim(0, 500)
+        ax.set_ylim(0, 1)
+        return
+
+    # Get AOI data from results
+    aoi_data = []
+
+    # Determine if values are in seconds (small values) or milliseconds (larger values)
+    max_aoi = results_df["AOI_Mean"].max()
+    values_in_seconds = max_aoi < 1.0
+
+    for alg in results_df["Algorithm"].unique():
+        alg_data = results_df[results_df["Algorithm"] == alg]["AOI_Mean"].tolist()
+        if alg_data and sum(alg_data) > 0:  # Only include non-zero data
+            # Convert seconds to milliseconds if values are small
+            if values_in_seconds:
+                aoi_data.append((alg, np.array(alg_data) * 1000))
+            else:
+                aoi_data.append((alg, np.array(alg_data)))
+
+    if not aoi_data:
+        # No valid AOI data found
+        ax.text(
+            0.5,
+            0.5,
+            "No non-zero AOI data available.",
+            horizontalalignment="center",
+            verticalalignment="center",
+            transform=ax.transAxes,
+            fontsize=12,
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.5),
+        )
+
+        ax.set_title(f"{title} (NO DATA)")
+        ax.set_xlabel("Age of Information [ms]")
+        ax.set_ylabel("Probability")
+        return
+
+    # Plot CDF for each algorithm
+    for alg, data in aoi_data:
+        # Sort the data
+        data_sorted = np.sort(data)
+        # Calculate the CDF
+        p = 1.0 * np.arange(len(data)) / (len(data) - 1) if len(data) > 1 else [1.0]
+        # Plot the CDF
+        ax.plot(data_sorted, p, label=alg)
+
+    ax.set_title(title)
+    ax.set_xlabel("Age of Information [ms]")
+    ax.set_ylabel("Probability")
+
+    # Set appropriate limits based on data
+    all_values = np.concatenate([data for _, data in aoi_data])
+    max_value = np.max(all_values)
+
+    # Set x-limit to be 1.2x the max value or at least 400ms
+    ax.set_xlim(0, max(400, max_value * 1.2))
+
+    # Add grid for readability
+    ax.grid(True, alpha=0.3)
+
+    ax.legend()
+
+
+# This function should be incorporated into the plot_comparison_results function
+def plot_comparison_results(results_df, output_folder, experiment_tag=""):
     """
     Plot comparison results matching those in the Wolff et al. paper with box plots
 
@@ -106,8 +230,12 @@ def plot_comparison_results(results_df):
     -----------
     results_df : pandas.DataFrame
         DataFrame containing all simulation results
+    output_folder : str
+        Folder where plots will be saved
+    experiment_tag : str
+        Optional tag to add to filenames for better organization
     """
-    logger.info("Ploting results...")
+    logger.info("Plotting results...")
     # Set seaborn style
     sns.set(style="whitegrid")
 
@@ -169,56 +297,37 @@ def plot_comparison_results(results_df):
     axes[1, 0].set_xticklabels(["5%", "10%", "25%", "50%"])
 
     # Create CDF plot for Age of Information - Figure 6
-    # Get AOI data from results
-    aoi_data = []
+    # Use the improved AOI plotting function
+    plot_aoi_data(results_df, axes[1, 1])
 
-    for alg in results_df["Algorithm"].unique():
-        alg_data = results_df[results_df["Algorithm"] == alg]["AOI_Mean"].tolist()
-        if alg_data:
-            # Convert to seconds if needed
-            aoi_data.append(
-                (
-                    alg,
-                    (
-                        np.array(alg_data) / 1000
-                        if np.mean(alg_data) > 100
-                        else np.array(alg_data)
-                    ),
-                )
-            )
-
-    # Plot CDF
-    for alg, data in aoi_data:
-        # Sort the data
-        data_sorted = np.sort(data)
-        # Calculate the CDF
-        p = 1.0 * np.arange(len(data)) / (len(data) - 1)
-        # Plot the CDF
-        axes[1, 1].plot(data_sorted, p, label=alg)
-
-    axes[1, 1].set_title("Age of Information")
-    axes[1, 1].set_xlabel("Age of Information [s]")
-    axes[1, 1].set_ylabel("Probability")
-    axes[1, 1].set_ylim(0, 1.0)
-    axes[1, 1].legend()
+    # Generate unique filename
+    main_plot_filename = f"vanet_simulation_results{experiment_tag}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    main_plot_path = os.path.join(output_folder, main_plot_filename)
 
     # Save and show results
     fig.tight_layout()
-    fig.savefig("vanet_simulation_results.png", dpi=300)
+    fig.savefig(main_plot_path, dpi=300)
+    logger.info(f"Main plot saved to {main_plot_path}")
     plt.show()
 
     # Create a separate figure for CPM Size (Figure 5)
     fig2, ax = plt.subplots(figsize=(10, 6))
 
     # Filter for 25% penetration rate as in the paper
-    pen_25 = results_df[results_df["Penetration_Rate"] == 0.05]
+    pen_25 = results_df[results_df["Penetration_Rate"] == 0.25]
+    if pen_25.empty:
+        # Try 5% if 25% is not available
+        pen_25 = results_df[results_df["Penetration_Rate"] == 0.05]
+        logger.info("Using 5% penetration rate data for CPM size plot (25% not found)")
 
-    # Create boxplot (this part was already correct)
+    # Create boxplot
     sns.boxplot(
         data=pen_25, x="Algorithm", y="CPM_Size_Mean", hue="Vehicle_Density", ax=ax
     )
 
-    ax.set_title("Potential Message Size by Algorithm (25% Penetration Rate)")
+    ax.set_title(
+        f"Potential Message Size by Algorithm ({int(pen_25['Penetration_Rate'].iloc[0]*100)}% Penetration Rate)"
+    )
     ax.set_xlabel("CPS Mode")
     ax.set_ylabel("Potential Message Size [#Objects]")
 
@@ -226,9 +335,14 @@ def plot_comparison_results(results_df):
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(handles, ["Low", "High"], title="Traffic Density")
 
+    # Generate unique filename
+    cpm_plot_filename = f"vanet_cpm_size_comparison{experiment_tag}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    cpm_plot_path = os.path.join(output_folder, cpm_plot_filename)
+
     # Save this figure too
     fig2.tight_layout()
-    fig2.savefig("vanet_cpm_size_comparison.png", dpi=300)
+    fig2.savefig(cpm_plot_path, dpi=300)
+    logger.info(f"CPM size plot saved to {cpm_plot_path}")
     plt.show()
 
 
@@ -242,6 +356,15 @@ if __name__ == "__main__":
         "--quick",
         action="store_true",
         help="Run a quick test with fewer configurations",
+    )
+    parser.add_argument(
+        "--load-csv",
+        help="Load results from CSV file instead of running simulations",
+    )
+    parser.add_argument(
+        "--experiment-tag",
+        default="",
+        help="Optional tag to add to output filenames",
     )
 
     # Add logging arguments
@@ -264,7 +387,7 @@ if __name__ == "__main__":
         choices=["simulation", "environment", "vehicle", "network", "metrics"],
         help="Set specific components to DEBUG level",
     )
-    parser.add_argument("--threads", default=10, type=int)
+    parser.add_argument("--threads", default=None, type=int)
 
     args = parser.parse_args()
 
@@ -283,45 +406,66 @@ if __name__ == "__main__":
 
     logger.info("VANET Simulation starting")
 
-    if args.quick:
-        # Quick test run with limited configurations
-        logger.info("Running quick test simulation...")
-        vehicle_densities = [30]
-        penetration_rates = [0.05]
-        algorithms = [
-            ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
-            ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
-        ]
-        num_runs = 2  # Just 2 runs for quick testing
-        simulation_time = 10  # Shorter simulation time
+    # Create output folders
+    folders = setup_result_folders()
+    logger.info(f"Output folders created: {folders}")
+
+    # Add experiment tag to csv and plot filenames if provided
+    experiment_tag = f"_{args.experiment_tag}" if args.experiment_tag else ""
+
+    # Check if we should load from CSV instead of running simulations
+    if args.load_csv:
+        logger.info(f"Loading results from {args.load_csv}")
+        results = pd.read_csv(args.load_csv)
+
+        # Plot the loaded results
+        logger.info("Generating plots from loaded CSV...")
+        plot_comparison_results(results, folders["plots"], experiment_tag)
     else:
-        # Full experiment matching Wolff paper parameters
-        logger.info("Running full VANET simulation experiment...")
-        vehicle_densities = [30, 60]  # Low and high density as in paper
-        penetration_rates = [0.05, 0.1, 0.25, 0.5]  # Match paper's values
-        algorithms = [
-            ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
-            # ForwardingAlgorithm.GBC,  # GBC forwarding
-            ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
-        ]
-        num_runs = 10  # 10 runs per configuration as in the paper
-        simulation_time = 15  # 15 seconds per run as in the paper
+        # Run simulations as usual
+        if args.quick:
+            # Quick test run with limited configurations
+            logger.info("Running quick test simulation...")
+            vehicle_densities = [30]
+            penetration_rates = [0.05]
+            algorithms = [
+                ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
+                ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
+            ]
+            num_runs = 2  # Just 2 runs for quick testing
+            simulation_time = 10  # Shorter simulation time
+        else:
+            # Full experiment matching Wolff paper parameters
+            logger.info("Running full VANET simulation experiment...")
+            vehicle_densities = [30, 60]  # Low and high density as in paper
+            penetration_rates = [0.05, 0.1, 0.25, 0.5]  # Match paper's values
+            algorithms = [
+                ForwardingAlgorithm.NO_FORWARDING,  # Baseline ETSI CPS
+                # ForwardingAlgorithm.GBC,  # GBC forwarding
+                ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
+            ]
+            num_runs = 10  # 10 runs per configuration as in the paper
+            simulation_time = 15  # 15 seconds per run as in the paper
 
-    # Run experiment
-    results = run_experiment_parallel(
-        vehicle_densities=vehicle_densities,
-        penetration_rates=penetration_rates,
-        algorithms=algorithms,
-        num_runs=num_runs,
-        simulation_time=simulation_time,
-        visualize=args.visualize,
-        max_workers=args.threads,
-    )
+        # Run experiment
+        results = run_experiment_parallel(
+            vehicle_densities=vehicle_densities,
+            penetration_rates=penetration_rates,
+            algorithms=algorithms,
+            num_runs=num_runs,
+            simulation_time=simulation_time,
+            visualize=args.visualize,
+            max_workers=args.threads,
+        )
 
-    # Save results to CSV
-    results.to_csv("vanet_simulation_results.csv", index=False)
-    logger.info("Results saved to 'vanet_simulation_results.csv'")
+        # Generate unique filename for CSV
+        csv_filename = f"vanet_simulation_results{experiment_tag}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_path = os.path.join(folders["csv"], csv_filename)
 
-    # Plot results
-    logger.info("Generating plots...")
-    plot_comparison_results(results)
+        # Save results to CSV with unique name
+        results.to_csv(csv_path, index=False)
+        logger.info(f"Results saved to '{csv_path}'")
+
+        # Plot results
+        logger.info("Generating plots...")
+        plot_comparison_results(results, folders["plots"], experiment_tag)

@@ -136,7 +136,7 @@ class Vehicle:
         return detected
 
     def receive_cpm(self, cpm, reception_time):
-        """Process received CPM with simplified time handling"""
+        """Process received CPM with improved reception time tracking"""
         if not self.has_cps:
             return
 
@@ -163,21 +163,19 @@ class Vehicle:
             ):
                 continue
 
-            # Record reception time if not already recorded
-            # This is when the vehicle first received info about this object
-            if obj_id not in self.object_reception_times:
-                self.object_reception_times[obj_id] = reception_time
+            # Always record the reception time for AOI calculation
+            self.object_reception_times[obj_id] = reception_time
 
             # Update local environment model if newer information is available
             if obj_id not in self.local_environment_model or (
                 self.local_environment_model[obj_id]["timestamp"]
                 < obj_data["timestamp"]
             ):
-                # Store the original data with reception time
+                # Store the original data
                 self.local_environment_model[obj_id] = obj_data
 
     def run_cps_algorithm(self, current_time, network):
-        """Run the CPS algorithm with simplified time handling"""
+        """Run the CPS algorithm with proper timestamp handling"""
         if not self.has_cps:
             return None
 
@@ -199,6 +197,9 @@ class Vehicle:
         # Remove stale objects
         for obj_id in stale_object_ids:
             del self.local_environment_model[obj_id]
+            # Also remove from reception times tracking
+            if obj_id in self.object_reception_times:
+                del self.object_reception_times[obj_id]
 
         # Update local environment model with own detected objects
         for obj_id, obj_data in self.objects_detected.items():
@@ -207,8 +208,7 @@ class Vehicle:
             self.local_environment_model[obj_id] = obj_data
 
             # Update reception time for own objects
-            if obj_id not in self.object_reception_times:
-                self.object_reception_times[obj_id] = current_time
+            self.object_reception_times[obj_id] = current_time
 
         # Create new CPM
         new_cpm = {

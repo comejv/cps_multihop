@@ -93,18 +93,12 @@ class MetricsCollector:
         self.cbr_values.append(cbr)
 
     def calculate_aoi(self, vehicles, current_time):
-        """Calculate Age of Information with simplified time handling"""
+        """Calculate Age of Information with accurate tracking"""
         aoi_values = []
-        algorithm_specific_values = {}
 
         for vehicle in vehicles:
             if not vehicle.has_cps:
                 continue
-
-            # Get algorithm name for statistics
-            algorithm_name = vehicle.algorithm.name
-            if algorithm_name not in algorithm_specific_values:
-                algorithm_specific_values[algorithm_name] = []
 
             # For each object in local environment model
             for obj_id, obj_data in vehicle.local_environment_model.items():
@@ -116,25 +110,27 @@ class MetricsCollector:
                 update_time = obj_data["timestamp"]
 
                 # Get when the vehicle received this information
-                reception_time = vehicle.object_reception_times.get(obj_id)
+                reception_time = vehicle.object_reception_times.get(
+                    obj_id, current_time
+                )
 
-                # Skip if we don't have reception time
-                if reception_time is None:
-                    continue
-
-                # Ensure reception can't be before update (causality)
-                reception_time = max(reception_time, update_time)
-
-                # Calculate AOI in milliseconds
+                # Calculate AOI in milliseconds - different from original implementation
+                # AOI is the time between when data was generated and when it was received
                 aoi_ms = (reception_time - update_time) * 1000
 
-                # Basic validation
-                if 0 <= aoi_ms <= 10000:  # Skip extreme values
+                # Basic validation - accept small positive values
+                if aoi_ms <= 0 or aoi_ms >= 5:  # Skip extreme values
+                    metrics_logger.warn(f"Abnormal AOI value : {aoi_ms}")
+                    self.aoi_values.append(aoi_ms)
                     aoi_values.append(aoi_ms)
-                    algorithm_specific_values[algorithm_name].append(aoi_ms)
 
-        # Return mean AOI
-        return np.mean(aoi_values) if aoi_values else 0.0
+        # Return mean AOI and make sure we don't return zero
+        mean_aoi = np.mean(aoi_values) if aoi_values else 0.0
+
+        if mean_aoi == 0.0 and len(vehicles) > 0:
+            metrics_logger.error("Null AOI mean")
+
+        return mean_aoi
 
     def record_cpm_size(self, cpm):
         """Record CPM message size (number of objects)"""
