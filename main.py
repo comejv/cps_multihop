@@ -264,6 +264,7 @@ if __name__ == "__main__":
         choices=["simulation", "environment", "vehicle", "network", "metrics"],
         help="Set specific components to DEBUG level",
     )
+    parser.add_argument("--threads", default=10, type=int)
 
     args = parser.parse_args()
 
@@ -314,6 +315,7 @@ if __name__ == "__main__":
         num_runs=num_runs,
         simulation_time=simulation_time,
         visualize=args.visualize,
+        max_workers=args.threads,
     )
 
     # Save results to CSV

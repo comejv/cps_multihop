@@ -41,8 +41,7 @@ def setup_logging(
 
     # Create formatters
     console_formatter = logging.Formatter("%(levelname)-8s: %(message)s")
-    file_formatter = logging.Formatter(
-        "[%(name)-10s:%(levelname)-8s] %(message)s")
+    file_formatter = logging.Formatter("[%(name)-10s:%(levelname)-8s] %(message)s")
 
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
@@ -67,11 +66,11 @@ def setup_logging(
     main_logger = logging.getLogger("__main__")
     main_logger.setLevel(console_level)
     main_logger.propagate = False  # Don't propagate to root logger
-    
+
     # Clear any existing handlers
     for handler in main_logger.handlers[:]:
         main_logger.removeHandler(handler)
-    
+
     # Add console handler only
     main_console_handler = logging.StreamHandler(sys.stdout)
     main_console_handler.setLevel(console_level)
