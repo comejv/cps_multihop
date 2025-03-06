@@ -388,6 +388,7 @@ if __name__ == "__main__":
         help="Set specific components to DEBUG level",
     )
     parser.add_argument("--threads", default=None, type=int)
+    parser.add_argument("--num-runs", default=10, type=int)
 
     args = parser.parse_args()
 
@@ -444,7 +445,9 @@ if __name__ == "__main__":
                 # ForwardingAlgorithm.GBC,  # GBC forwarding
                 ForwardingAlgorithm.MULTI_HOP,  # Proposed algorithm
             ]
-            num_runs = 10  # 10 runs per configuration as in the paper
+            num_runs = (
+                args.num_runs
+            )  # default 10 runs per configuration as in the paper
             simulation_time = 15  # 15 seconds per run as in the paper
 
         # Run experiment

@@ -8,7 +8,7 @@ vehicle_logger = getLogger("vehicle")
 
 
 class Vehicle:
-    """Vehicle class with simplified time handling"""
+    """Vehicle class with implementation closely matching Wolff algorithm"""
 
     def __init__(
         self,
@@ -34,13 +34,22 @@ class Vehicle:
         self.comm_range = 200  # meters
         self.objects_detected = {}  # Objects detected by this vehicle
 
+        # === ALGORITHM 1 INITIALIZATION PART ===
+        # Initialize Local Environment Model (LEM): LEM ← ∅
+        self.local_environment_model = {}  # The LEM from the paper
+
+        # Initialize CPM Buffer: CPM_Buffer ← ∅
+        self.cpm_buffer = []  # Added explicit CPM buffer from the paper
+
+        # Define maximum hop count: MAX_HOP_COUNT
+        self.max_hop_count = 2  # Maximum hops for forwarding as in paper
+        # =====================================
+
         # Time related fields
-        self.local_environment_model = {}  # Objects known to this vehicle
         self.object_reception_times = {}  # When info about each object was received
         self.kinematic_update_tracker = {}  # For kinematic trigger checking
 
         # CPS parameters
-        self.max_hop_count = 2  # Maximum hops for forwarding
         self.aoi_threshold = 1  # second
         self.last_cpm_generation_time = 0
         self.cpm_generation_interval = 0.1
@@ -66,7 +75,6 @@ class Vehicle:
         x, y = self.position
 
         # Ensure vehicles have a valid heading for road movement
-        # This makes sure no vehicles are immobile due to invalid heading
         if self.current_road["type"] == "horizontal":
             self.heading = 0 if self.lane_offset > 0 else 180
         else:  # vertical
@@ -128,7 +136,6 @@ class Vehicle:
                 }
 
                 # Set reception time for own detections
-                # This represents when the vehicle obtained this information
                 if obj_id not in self.object_reception_times:
                     self.object_reception_times[obj_id] = current_time
 
@@ -136,50 +143,115 @@ class Vehicle:
         return detected
 
     def receive_cpm(self, cpm, reception_time):
-        """Process received CPM with improved reception time tracking"""
+        """
+        Process received CPM by adding to buffer
+        Maps to 'CPM_Buffer' in Algorithm 1
+        """
         if not self.has_cps:
             return
 
-        # Process objects from the CPM
-        for obj_data in cpm["objects"]:
-            obj_id = obj_data["object_id"]
+        # Instead of processing immediately, add to buffer as in Algorithm 1
+        self.cpm_buffer.append((cpm, reception_time))
 
-            # Apply forwarding algorithm filters
-            # For NO_FORWARDING, we only accept objects with hop_count=0 (directly sensed)
-            if (
-                self.algorithm == ForwardingAlgorithm.NO_FORWARDING
-                and obj_data["hop_count"] > 0
-            ):
-                continue
+    def _process_cpm_buffer(self, current_time):
+        """
+        Process all CPMs in the buffer
+        Maps to the 'While not CPM_Buffer.isEmpty()' loop in Algorithm 1
+        """
+        while self.cpm_buffer:
+            cpm, reception_time = self.cpm_buffer.pop(0)
 
-            # For GBC, network layer should handle forwarding
-            if self.algorithm == ForwardingAlgorithm.GBC and obj_data["hop_count"] > 0:
-                continue
+            # Process objects from the CPM
+            for obj_data in cpm["objects"]:
+                obj_id = obj_data["object_id"]
 
-            # For MULTI_HOP, check that hop count is within limits
-            if (
-                self.algorithm == ForwardingAlgorithm.MULTI_HOP
-                and obj_data["hop_count"] >= self.max_hop_count
-            ):
-                continue
+                # Apply forwarding algorithm filters
+                # For NO_FORWARDING, we only accept objects with hop_count=0 (directly sensed)
+                if (
+                    self.algorithm == ForwardingAlgorithm.NO_FORWARDING
+                    and obj_data["hop_count"] > 0
+                ):
+                    continue
 
-            # Always record the reception time for AOI calculation
-            self.object_reception_times[obj_id] = reception_time
+                # For GBC, network layer should handle forwarding
+                if (
+                    self.algorithm == ForwardingAlgorithm.GBC
+                    and obj_data["hop_count"] > 0
+                ):
+                    continue
 
-            # Update local environment model if newer information is available
-            if obj_id not in self.local_environment_model or (
-                self.local_environment_model[obj_id]["timestamp"]
-                < obj_data["timestamp"]
-            ):
-                # Store the original data
-                self.local_environment_model[obj_id] = obj_data
+                # Record reception time for AOI calculation
+                self.object_reception_times[obj_id] = reception_time
+
+                # Update LEM if object is not in LEM OR if LEM[objID].timestamp < object.timestamp
+                # AND object.hopCount < MAX_HOP_COUNT (from Algorithm 1)
+                if obj_id not in self.local_environment_model or (
+                    self.local_environment_model[obj_id]["timestamp"]
+                    < obj_data["timestamp"]
+                    and obj_data["hop_count"] < self.max_hop_count
+                ):
+                    self.local_environment_model[obj_id] = obj_data
+
+    def _kinematic_change_trigger(self, obj_id, obj_data, current_time):
+        """
+        Check if object meets kinematic criteria for inclusion in CPM
+        Maps to object.kinematicChangeTrigger() in Algorithm 1
+        """
+        if obj_id not in self.kinematic_update_tracker:
+            # First time seeing this object
+            self.kinematic_update_tracker[obj_id] = {
+                "time": current_time,
+                "position": obj_data["position"],
+                "speed": obj_data["speed"],
+                "heading": obj_data["heading"],
+            }
+            return True
+
+        last_update = self.kinematic_update_tracker[obj_id]
+
+        # ETSI kinematic update rules
+        time_diff = current_time - last_update["time"]
+        pos_diff = self.environment.get_distance(
+            last_update["position"], obj_data["position"]
+        )
+        speed_diff = abs(last_update["speed"] - obj_data["speed"])
+        heading_diff = abs(last_update["heading"] - obj_data["heading"])
+
+        if (
+            time_diff > 1.0  # More than 1 second
+            or pos_diff > 4.0  # Position change > 4m
+            or speed_diff > 4.0  # Speed change > 4 m/s
+            or heading_diff > 4.0  # Heading change > 4°
+        ):
+            # Update last inclusion time
+            self.kinematic_update_tracker[obj_id] = {
+                "time": current_time,
+                "position": obj_data["position"],
+                "speed": obj_data["speed"],
+                "heading": obj_data["heading"],
+            }
+            return True
+
+        return False
+
+    def _dcc_send_condition(self, network):
+        """
+        Check if DCC allows sending
+        Maps to DCC_SEND_CONDITION() in Algorithm 1
+        """
+        cbr = network.get_channel_busy_ratio()
+        return cbr < self.dcc_threshold
 
     def run_cps_algorithm(self, current_time, network):
-        """Run the CPS algorithm with proper timestamp handling"""
+        """
+        Run the CPS algorithm following Algorithm 1 structure
+        """
         if not self.has_cps:
             return None
 
-        # Check if it's time to run the algorithm
+        # === ALGORITHM 1 MAIN LOOP STRUCTURE ===
+
+        # Check if it's time to run the algorithm (PERIODIC_EXECUTION_WAIT())
         time_since_last_execution = current_time - self.last_cpm_generation_time
         if time_since_last_execution < self.cpm_generation_interval:
             return None
@@ -187,30 +259,28 @@ class Vehicle:
         # Update the last execution time
         self.last_cpm_generation_time = current_time
 
-        # Remove stale objects from LEM
+        # Process CPM Buffer (first part of the While loop in Algorithm 1)
+        self._process_cpm_buffer(current_time)
+
+        # Remove stale objects from LEM (not in Algorithm 1 but good practice)
         stale_object_ids = []
         for obj_id, obj_data in self.local_environment_model.items():
             time_since_update = current_time - obj_data["timestamp"]
             if time_since_update > self.aoi_threshold:
                 stale_object_ids.append(obj_id)
 
-        # Remove stale objects
         for obj_id in stale_object_ids:
             del self.local_environment_model[obj_id]
-            # Also remove from reception times tracking
             if obj_id in self.object_reception_times:
                 del self.object_reception_times[obj_id]
 
-        # Update local environment model with own detected objects
+        # Update LEM with own detected objects (implicit in Algorithm 1)
         for obj_id, obj_data in self.objects_detected.items():
-            # Make sure timestamp is set to current time
             obj_data["timestamp"] = current_time
             self.local_environment_model[obj_id] = obj_data
-
-            # Update reception time for own objects
             self.object_reception_times[obj_id] = current_time
 
-        # Create new CPM
+        # Create new CPM (CREATE_NEW_CPM())
         new_cpm = {
             "sender_id": self.id,
             "timestamp": current_time,
@@ -218,75 +288,37 @@ class Vehicle:
             "objects": [],
         }
 
-        # Add objects to CPM based on algorithm and kinematic change
+        # Add objects meeting criteria (For loop in Algorithm 1)
         for obj_id, obj_data in self.local_environment_model.items():
-            # For NO_FORWARDING and GBC, only include objects detected by this vehicle
+            # Filter based on algorithm
             if (
                 self.algorithm == ForwardingAlgorithm.NO_FORWARDING
                 or self.algorithm == ForwardingAlgorithm.GBC
             ) and obj_data["source_id"] != self.id:
                 continue
 
-            # For MULTI_HOP, skip if hop count is already at max
-            if (
-                self.algorithm == ForwardingAlgorithm.MULTI_HOP
-                and obj_data["hop_count"] >= self.max_hop_count
-            ):
+            # Check max hop count (directly from Algorithm 1)
+            if obj_data["hop_count"] >= self.max_hop_count:
                 continue
 
-            # Check if we should include this object based on kinematic update rules
-            should_include = False
-
-            # Kinematic change trigger logic using simplified tracker
-            if obj_id not in self.kinematic_update_tracker:
-                # First time seeing this object
-                should_include = True
-            else:
-                last_update = self.kinematic_update_tracker[obj_id]
-
-                # ETSI kinematic update rules
-                time_diff = current_time - last_update["time"]
-                pos_diff = self.environment.get_distance(
-                    last_update["position"], obj_data["position"]
-                )
-                speed_diff = abs(last_update["speed"] - obj_data["speed"])
-                heading_diff = abs(last_update["heading"] - obj_data["heading"])
-
-                if (
-                    time_diff > 1.0  # More than 1 second
-                    or pos_diff > 4.0  # Position change > 4m
-                    or speed_diff > 4.0  # Speed change > 4 m/s
-                    or heading_diff > 4.0  # Heading change > 4°
-                ):
-                    should_include = True
-
-            if should_include:
-                # Update last inclusion time
-                self.kinematic_update_tracker[obj_id] = {
-                    "time": current_time,
-                    "position": obj_data["position"],
-                    "speed": obj_data["speed"],
-                    "heading": obj_data["heading"],
-                }
-
+            # Check kinematic trigger (object.kinematicChangeTrigger())
+            if self._kinematic_change_trigger(obj_id, obj_data, current_time):
                 # Create a copy with updated hop count for forwarding
                 obj_data_copy = obj_data.copy()
 
-                # Only increment hop count for objects from other vehicles in MULTI_HOP mode
+                # Increment hop count for MULTI_HOP mode
                 if (
                     self.algorithm == ForwardingAlgorithm.MULTI_HOP
                     and obj_data["source_id"] != self.id
                 ):
                     obj_data_copy["hop_count"] += 1
-                    # Update timestamp to current time for forwarding
                     obj_data_copy["timestamp"] = current_time
 
-                # Add object to CPM
+                # Add to CPM
                 new_cpm["objects"].append(obj_data_copy)
 
-        # Check DCC condition before sending
-        cbr = network.get_channel_busy_ratio()
-        if cbr < self.dcc_threshold:
+        # Check DCC condition before sending (DCC_SEND_CONDITION())
+        if self._dcc_send_condition(network):
             return new_cpm if new_cpm["objects"] else None
 
         return None
