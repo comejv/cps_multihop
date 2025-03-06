@@ -83,7 +83,7 @@ def run_experiment_parallel(
 
     # Run simulations in parallel
     sim_func = partial(
-        run_single_simulation, simulation_time=simulation_time, visualize=False
+        run_single_simulation, simulation_time=simulation_time, visualize=visualize
     )
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -449,6 +449,17 @@ if __name__ == "__main__":
                 args.num_runs
             )  # default 10 runs per configuration as in the paper
             simulation_time = 15  # 15 seconds per run as in the paper
+
+        if args.visualize:
+            if args.threads is None:
+                logger.warning(
+                    "Using visualization without setting threads count, defaulting to single threaded simulation."
+                )
+                args.threads = 1
+            elif args.threads > 1:
+                logger.warning(
+                    "Asking for visualization with multiple threads, untested, use caution."
+                )
 
         # Run experiment
         results = run_experiment_parallel(
